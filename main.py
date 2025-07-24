@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Literal, Dict, Any
-import openai
+from anthropic import Anthropic, AnthropicError
 import os
 
 app = FastAPI(title="Universal Business Assessment API")
@@ -20,8 +20,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Set OpenAI API key from environment variable
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Initialize Anthropic client with API key from environment variable
+anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # --- Universal Business Assessment Input Schema ---
 class UniversalScorecardInput(BaseModel):
@@ -315,8 +315,8 @@ def score_strategic(data: UniversalScorecardInput) -> int:
 # --- Enhanced Insight Generator ---
 def generate_universal_insight(data: UniversalScorecardInput, scores: Dict[str, int]) -> str:
     """Generate comprehensive business insights with BeamX recommendations"""
-    if not openai.api_key:
-        raise HTTPException(status_code=500, detail="OpenAI API key is not configured")
+    if not anthropic_client.api_key:
+        raise HTTPException(status_code=500, detail="Anthropic API key is not configured")
 
     f, g, o, t, d, s = scores['financial'], scores['growth'], scores['operations'], scores['team'], scores['digital'], scores['strategic']
 
@@ -434,16 +434,15 @@ def generate_universal_insight(data: UniversalScorecardInput, scores: Dict[str, 
     """
 
     try:
-        client = openai.OpenAI(api_key=openai.api_key)
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
+        response = anthropic_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
             max_tokens=2000,
-            temperature=0.7
+            temperature=0.7,
+            messages=[{"role": "user", "content": prompt}]
         )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OpenAI API error: {str(e)}")
+        return response.content[0].text.strip()
+    except AnthropicError as e:
+        raise HTTPException(status_code=500, detail=f"Anthropic API error: {str(e)}")
 
 # --- Complete Assessment Function ---
 def run_universal_assessment(data: UniversalScorecardInput) -> Dict[str, Any]:
