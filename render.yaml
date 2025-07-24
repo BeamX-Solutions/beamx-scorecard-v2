@@ -7,3 +7,5 @@ services:
     envVars:
       - key: OPENAI_API_KEY
         sync: false  # don't expose it in the file
+
+

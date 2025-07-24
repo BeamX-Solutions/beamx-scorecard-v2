@@ -5,7 +5,7 @@ from typing import Literal, Dict, Any
 import openai
 import os
 
-app = FastAPI()
+app = FastAPI(title="Universal Business Assessment API")
 
 # CORS configuration
 origins = [
@@ -434,7 +434,8 @@ def generate_universal_insight(data: UniversalScorecardInput, scores: Dict[str, 
     """
 
     try:
-        response = openai.ChatCompletion.create(
+        client = openai.OpenAI(api_key=openai.api_key)
+        response = client.chat.completions.create(
             model="gpt-4",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2000,
