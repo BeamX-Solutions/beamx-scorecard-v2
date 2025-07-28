@@ -25,6 +25,9 @@ anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # --- Universal Business Assessment Input Schema ---
 class UniversalScorecardInput(BaseModel):
+    fullName: str
+    companyName: str
+    email: str
     # FINANCIAL HEALTH
     revenue: Literal["Under $10K", "$10K–$50K", "$50K–$250K", "$250K–$1M", "$1M–$5M", "Over $5M"]
     revenue_trend: Literal["Declining", "Flat", "Growing slowly (<10%)", "Growing moderately (10-25%)", "Growing rapidly (>25%)"]
@@ -32,7 +35,6 @@ class UniversalScorecardInput(BaseModel):
     profit_margin: Literal["N/A", "Breaking even/Loss", "1-10%", "10-20%", "20-30%", "30%+"]
     cash_flow: Literal["Negative (spending savings)", "Break-even", "Positive but tight", "Healthy buffer", "Strong reserves"]
     financial_planning: Literal["No formal planning", "Basic budgeting", "Monthly financial reviews", "Detailed forecasting"]
-
     # GROWTH & MARKETING
     customer_acquisition: Literal["Word of mouth only", "Some marketing efforts", "Consistent marketing", "Multi-channel strategy"]
     customer_cost_awareness: Literal["No idea", "Rough estimate", "Track precisely"]
@@ -41,35 +43,30 @@ class UniversalScorecardInput(BaseModel):
     marketing_budget: Literal["No budget", "Under 5% of revenue", "5-10% of revenue", "Over 10% of revenue"]
     online_presence: Literal["No website/social", "Basic website", "Active online presence", "Strong digital brand"]
     customer_feedback: Literal["Don't collect", "Informal feedback", "Surveys/reviews", "Systematic feedback loops"]
-
     # OPERATIONS & SYSTEMS
     record_keeping: Literal["Paper/scattered files", "Basic digital files", "Accounting software", "Integrated business software"]
     inventory_management: Literal["N/A", "Manual tracking", "Basic systems", "Automated systems"]
     scheduling_systems: Literal["Paper calendar", "Basic digital calendar", "Scheduling software", "Integrated workflow"]
     quality_control: Literal["No formal process", "Basic checks", "Standard procedures", "Systematic quality management"]
     supplier_relationships: Literal["N/A", "Transactional only", "Good relationships", "Strategic partnerships"]
-
     # TEAM & MANAGEMENT
     team_size: Literal["Solo operation", "2-5 people", "6-15 people", "16-50 people", "50+ people"]
     hiring_process: Literal["N/A", "Informal hiring", "Basic process", "Structured interviews", "Comprehensive system"]
     employee_training: Literal["N/A", "On-the-job learning", "Basic training", "Formal programs"]
     delegation: Literal["Do everything myself", "Delegate basic tasks", "Delegate important work", "Team runs independently"]
     performance_tracking: Literal["No tracking", "Informal feedback", "Regular check-ins", "Formal performance reviews"]
-
     # DIGITAL ADOPTION
     payment_systems: Literal["Cash/check only", "Basic card processing", "Multiple payment options", "Advanced payment tech"]
     data_backup: Literal["No system", "Manual backups", "Cloud storage", "Automated backup systems"]
     communication_tools: Literal["Phone/email only", "Basic messaging", "Team communication apps", "Integrated communication"]
     website_functionality: Literal["No website", "Basic info site", "Interactive features", "E-commerce/booking enabled"]
     social_media_use: Literal["No presence", "Occasional posts", "Regular updates", "Strategic content marketing"]
-
     # STRATEGIC POSITION
     market_knowledge: Literal["Limited knowledge", "Basic awareness", "Good understanding", "Deep market insights"]
     competitive_advantage: Literal["Not sure", "Price/cost", "Quality/service", "Unique offering", "Market position"]
     customer_segments: Literal["Serve everyone", "1-2 main types", "Well-defined segments", "Specialized niches"]
     pricing_strategy: Literal["Match competitors", "Cost-plus margin", "Value-based pricing", "Dynamic/strategic pricing"]
     growth_planning: Literal["No plans", "Vague goals", "Basic plan", "Detailed strategy"]
-
     # BUSINESS CONTEXT
     business_type: Literal[
         "Retail/E-commerce", "Service Business", "Restaurant/Food", "Healthcare/Medical",
@@ -323,6 +320,9 @@ def generate_universal_insight(data: UniversalScorecardInput, scores: Dict[str, 
     # Create detailed context from responses
     context_details = f"""
     BUSINESS PROFILE:
+    - Full Name: {data.fullName}
+    - Company Name: {data.companyName}
+    - Email: {data.email}
     - Business Type: {data.business_type}
     - Business Age: {data.business_age}
     - Team Size: {data.team_size}
