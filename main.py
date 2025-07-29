@@ -7,7 +7,6 @@ from anthropic import Anthropic, AnthropicError
 from weasyprint import HTML
 import os
 import tempfile
-import re
 import logging
 
 # Set up logging
@@ -31,6 +30,22 @@ app.add_middleware(
 
 # Initialize Anthropic client with API key from environment variable
 anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+# --- Sanitization Function ---
+def sanitize_html(text: str) -> str:
+    """Sanitize input to prevent HTML injection"""
+    if not isinstance(text, str):
+        text = str(text)
+    replacements = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
 
 # --- Universal Business Assessment Input Schema ---
 class UniversalScorecardInput(BaseModel):
@@ -489,21 +504,6 @@ def run_universal_assessment(data: UniversalScorecardInput) -> Dict[str, Any]:
 def generate_pdf_report(data: UniversalScorecardInput, result: Dict[str, Any]) -> str:
     """Generate a PDF report using WeasyPrint"""
     logger.info("Starting PDF report generation with WeasyPrint")
-
-    # Sanitizing input to prevent HTML injection
-    def sanitize_html(text: str) -> str:
-        if not isinstance(text, str):
-            text = str(text)
-        replacements = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#39;'
-        }
-        for old, new in replacements.items():
-            text = text.replace(old, new)
-        return text
 
     # Extracting scores and insight
     scores = result['scores']
