@@ -1,9 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Literal, Dict, Any
 from anthropic import Anthropic, AnthropicError
 import os
+import tempfile
+import subprocess
+import re
 
 app = FastAPI(title="Universal Business Assessment API")
 
@@ -25,9 +29,6 @@ anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # --- Universal Business Assessment Input Schema ---
 class UniversalScorecardInput(BaseModel):
-    fullName: str
-    companyName: str
-    email: str
     # FINANCIAL HEALTH
     revenue: Literal["Under $10K", "$10K–$50K", "$50K–$250K", "$250K–$1M", "$1M–$5M", "Over $5M"]
     revenue_trend: Literal["Declining", "Flat", "Growing slowly (<10%)", "Growing moderately (10-25%)", "Growing rapidly (>25%)"]
@@ -35,6 +36,7 @@ class UniversalScorecardInput(BaseModel):
     profit_margin: Literal["N/A", "Breaking even/Loss", "1-10%", "10-20%", "20-30%", "30%+"]
     cash_flow: Literal["Negative (spending savings)", "Break-even", "Positive but tight", "Healthy buffer", "Strong reserves"]
     financial_planning: Literal["No formal planning", "Basic budgeting", "Monthly financial reviews", "Detailed forecasting"]
+
     # GROWTH & MARKETING
     customer_acquisition: Literal["Word of mouth only", "Some marketing efforts", "Consistent marketing", "Multi-channel strategy"]
     customer_cost_awareness: Literal["No idea", "Rough estimate", "Track precisely"]
@@ -43,30 +45,35 @@ class UniversalScorecardInput(BaseModel):
     marketing_budget: Literal["No budget", "Under 5% of revenue", "5-10% of revenue", "Over 10% of revenue"]
     online_presence: Literal["No website/social", "Basic website", "Active online presence", "Strong digital brand"]
     customer_feedback: Literal["Don't collect", "Informal feedback", "Surveys/reviews", "Systematic feedback loops"]
+
     # OPERATIONS & SYSTEMS
     record_keeping: Literal["Paper/scattered files", "Basic digital files", "Accounting software", "Integrated business software"]
     inventory_management: Literal["N/A", "Manual tracking", "Basic systems", "Automated systems"]
     scheduling_systems: Literal["Paper calendar", "Basic digital calendar", "Scheduling software", "Integrated workflow"]
     quality_control: Literal["No formal process", "Basic checks", "Standard procedures", "Systematic quality management"]
     supplier_relationships: Literal["N/A", "Transactional only", "Good relationships", "Strategic partnerships"]
+
     # TEAM & MANAGEMENT
     team_size: Literal["Solo operation", "2-5 people", "6-15 people", "16-50 people", "50+ people"]
     hiring_process: Literal["N/A", "Informal hiring", "Basic process", "Structured interviews", "Comprehensive system"]
     employee_training: Literal["N/A", "On-the-job learning", "Basic training", "Formal programs"]
     delegation: Literal["Do everything myself", "Delegate basic tasks", "Delegate important work", "Team runs independently"]
     performance_tracking: Literal["No tracking", "Informal feedback", "Regular check-ins", "Formal performance reviews"]
+
     # DIGITAL ADOPTION
     payment_systems: Literal["Cash/check only", "Basic card processing", "Multiple payment options", "Advanced payment tech"]
     data_backup: Literal["No system", "Manual backups", "Cloud storage", "Automated backup systems"]
     communication_tools: Literal["Phone/email only", "Basic messaging", "Team communication apps", "Integrated communication"]
     website_functionality: Literal["No website", "Basic info site", "Interactive features", "E-commerce/booking enabled"]
     social_media_use: Literal["No presence", "Occasional posts", "Regular updates", "Strategic content marketing"]
+
     # STRATEGIC POSITION
     market_knowledge: Literal["Limited knowledge", "Basic awareness", "Good understanding", "Deep market insights"]
     competitive_advantage: Literal["Not sure", "Price/cost", "Quality/service", "Unique offering", "Market position"]
     customer_segments: Literal["Serve everyone", "1-2 main types", "Well-defined segments", "Specialized niches"]
     pricing_strategy: Literal["Match competitors", "Cost-plus margin", "Value-based pricing", "Dynamic/strategic pricing"]
     growth_planning: Literal["No plans", "Vague goals", "Basic plan", "Detailed strategy"]
+
     # BUSINESS CONTEXT
     business_type: Literal[
         "Retail/E-commerce", "Service Business", "Restaurant/Food", "Healthcare/Medical",
@@ -85,6 +92,11 @@ class UniversalScorecardInput(BaseModel):
         "Improve quality/service", "Prepare for succession/sale"
     ]
     location_importance: Literal["Fully location-dependent", "Mostly local", "Regional reach", "National/global"]
+
+    # NEW FIELDS FOR PDF REPORT
+    full_name: str
+    company_name: str
+    email: str
 
 # --- Complete Scoring Configuration ---
 SCORING_CONFIG: Dict[str, Dict[str, Any]] = {
@@ -320,9 +332,6 @@ def generate_universal_insight(data: UniversalScorecardInput, scores: Dict[str, 
     # Create detailed context from responses
     context_details = f"""
     BUSINESS PROFILE:
-    - Full Name: {data.fullName}
-    - Company Name: {data.companyName}
-    - Email: {data.email}
     - Business Type: {data.business_type}
     - Business Age: {data.business_age}
     - Team Size: {data.team_size}
@@ -466,6 +475,121 @@ def run_universal_assessment(data: UniversalScorecardInput) -> Dict[str, Any]:
         'assessment_data': data.dict()
     }
 
+# --- PDF Report Generator ---
+def generate_pdf_report(data: UniversalScorecardInput, result: Dict[str, Any]) -> str:
+    """Generate a LaTeX-based PDF report for the assessment"""
+    # Sanitizing input to prevent LaTeX injection
+    def sanitize_latex(text: str) -> str:
+        return re.sub(r'[\\{}&$%#^_~]', lambda m: '\\' + m.group(0), text)
+
+    # Extracting scores and insight
+    scores = result['scores']
+    insight = result['insight']
+    total_score = result['total_score']
+    max_score = result['max_score']
+
+    # Preparing LaTeX content
+    latex_content = f"""
+\\documentclass{{article}}
+\\usepackage[utf8]{{inputenc}}
+\\usepackage{{geometry}}
+\\geometry{{a4paper, margin=1in}}
+\\usepackage{{titlesec}}
+\\usepackage{{enumitem}}
+\\usepackage{{parskip}}
+\\usepackage{{multicol}}
+\\usepackage{{amsmath}}
+\\usepackage{{xcolor}}
+\\definecolor{{primarycolor}}{{RGB}}{{0, 102, 204}}
+\\usepackage{{tcolorbox}}
+\\tcbuselibrary{{skins,breakable}}
+\\usepackage{{noto}}
+
+\\titleformat{{\\section}}{{\\Large\\bfseries\\color{{primarycolor}}}}{{\\thesection}}{{1em}}{{}}
+\\titleformat{{\\subsection}}{{\\large\\bfseries}}{{\\thesubsection}}{{1em}}{{}}
+\\setlist{{noitemsep, topsep=0pt}}
+
+\\begin{{document}}
+
+\\begin{{center}}
+    \\vspace*{{1cm}}
+    {{\\Huge \\textbf{{Universal Business Assessment Report}} \\par}}
+    \\vspace{{0.5cm}}
+    {{\\large \\textbf{{BeamX Solutions}} \\par}}
+    \\vspace{{0.5cm}}
+    {{\\normalsize Prepared for: {sanitize_latex(data.full_name)} \\par}}
+    {{\\normalsize Company: {sanitize_latex(data.company_name)} \\par}}
+    {{\\normalsize Email: {sanitize_latex(data.email)} \\par}}
+    {{\\normalsize Date: \\today \\par}}
+\\end{{center}}
+
+\\vspace{{1cm}}
+
+\\section*{{Assessment Overview}}
+This report provides a comprehensive evaluation of {sanitize_latex(data.company_name)}'s business performance across six key pillars: Financial Health, Growth \\& Marketing, Operations \\& Systems, Team \\& Management, Digital Adoption, and Strategic Position. The assessment yields a total score of {total_score} out of {max_score}, reflecting the business's current strengths and areas for improvement.
+
+\\begin{{tcolorbox}}[colback=blue!5!white, colframe=primarycolor, title=Assessment Scores]
+    \\begin{{multicols}}{{2}}
+        \\begin{{itemize}}
+            \\item Financial Health: {scores['financial']}/25
+            \\item Growth \\& Marketing: {scores['growth']}/25
+            \\item Operations \\& Systems: {scores['operations']}/25
+            \\item Team \\& Management: {scores['team']}/25
+            \\item Digital Adoption: {scores['digital']}/25
+            \\item Strategic Position: {scores['strategic']}/25
+        \\end{{itemize}}
+    \\end{{multicols}}
+\\end{{tcolorbox}}
+
+\\section*{{Business Profile}}
+\\begin{{description}}
+    \\item[Business Type:] {sanitize_latex(data.business_type)}
+    \\item[Business Age:] {sanitize_latex(data.business_age)}
+    \\item[Team Size:] {sanitize_latex(data.team_size)}
+    \\item[Location Importance:] {sanitize_latex(data.location_importance)}
+    \\item[Primary Challenge:] {sanitize_latex(data.primary_challenge)}
+    \\item[Main Goal:] {sanitize_latex(data.main_goal)}
+\\end{{description}}
+
+\\section*{{Detailed Insights}}
+\\begin{{tcolorbox}}[colback=blue!5!white, colframe=primarycolor, breakable, title=Insights and Recommendations]
+    {sanitize_latex(insight.replace('**', '\\textbf{').replace('**', '}').replace('\n', '\\\\'))}
+\\end{{tcolorbox}}
+
+\\section*{{Next Steps}}
+To implement the recommendations provided in this report, contact BeamX Solutions at \\textbf{{info@beamxsolutions.com}} or visit \\textbf{{https://beamxsolutions.com}} to schedule a consultation. Our team is ready to help you achieve your business goals with tailored solutions.
+
+\\end{{document}}
+"""
+
+    # Creating a temporary directory for LaTeX processing
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tex_file_path = os.path.join(temp_dir, "report.tex")
+        pdf_file_path = os.path.join(temp_dir, "report.pdf")
+
+        # Writing LaTeX content to file
+        with open(tex_file_path, "w", encoding="utf-8") as tex_file:
+            tex_file.write(latex_content)
+
+        # Compiling LaTeX to PDF using latexmk
+        try:
+            subprocess.run(
+                ["latexmk", "-pdf", "-interaction=nonstopmode", tex_file_path],
+                cwd=temp_dir,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(status_code=500, detail=f"PDF generation error: {e.stderr.decode()}")
+
+        # Checking if PDF was generated
+        if not os.path.exists(pdf_file_path):
+            raise HTTPException(status_code=500, detail="PDF generation failed: Output file not found")
+
+        # Returning the path to the generated PDF
+        return pdf_file_path
+
 # --- API Endpoints ---
 @app.post("/assess", response_model=dict)
 async def assess_business(data: UniversalScorecardInput):
@@ -477,6 +601,25 @@ async def assess_business(data: UniversalScorecardInput):
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing assessment: {str(e)}")
+
+@app.post("/download-report")
+async def download_report(data: UniversalScorecardInput):
+    """Generate and download PDF report"""
+    try:
+        # Running assessment to get results
+        result = run_universal_assessment(data)
+        # Generating PDF
+        pdf_path = generate_pdf_report(data, result)
+        # Returning the file for download
+        return FileResponse(
+            pdf_path,
+            media_type="application/pdf",
+            filename=f"{sanitize_latex(data.company_name)}_Assessment_Report.pdf"
+        )
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating PDF report: {str(e)}")
 
 @app.get("/")
 async def root():
