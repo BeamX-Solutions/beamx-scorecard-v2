@@ -4,10 +4,15 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Literal, Dict, Any
 from anthropic import Anthropic, AnthropicError
+from weasyprint import HTML
 import os
 import tempfile
-import subprocess
 import re
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Universal Business Assessment API")
 
@@ -325,6 +330,7 @@ def score_strategic(data: UniversalScorecardInput) -> int:
 def generate_universal_insight(data: UniversalScorecardInput, scores: Dict[str, int]) -> str:
     """Generate comprehensive business insights with BeamX recommendations"""
     if not anthropic_client.api_key:
+        logger.error("Anthropic API key is not configured")
         raise HTTPException(status_code=500, detail="Anthropic API key is not configured")
 
     f, g, o, t, d, s = scores['financial'], scores['growth'], scores['operations'], scores['team'], scores['digital'], scores['strategic']
@@ -451,36 +457,53 @@ def generate_universal_insight(data: UniversalScorecardInput, scores: Dict[str, 
         )
         return response.content[0].text.strip()
     except AnthropicError as e:
+        logger.error(f"Anthropic API error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Anthropic API error: {str(e)}")
 
 # --- Complete Assessment Function ---
 def run_universal_assessment(data: UniversalScorecardInput) -> Dict[str, Any]:
     """Run complete business assessment and generate insights"""
-    scores = {
-        'financial': score_financial(data),
-        'growth': score_growth(data),
-        'operations': score_operations(data),
-        'team': score_team(data),
-        'digital': score_digital(data),
-        'strategic': score_strategic(data)
-    }
+    try:
+        scores = {
+            'financial': score_financial(data),
+            'growth': score_growth(data),
+            'operations': score_operations(data),
+            'team': score_team(data),
+            'digital': score_digital(data),
+            'strategic': score_strategic(data)
+        }
 
-    insight = generate_universal_insight(data, scores)
-
-    return {
-        'scores': scores,
-        'total_score': sum(scores.values()),
-        'max_score': 150,
-        'insight': insight,
-        'assessment_data': data.dict()
-    }
+        insight = generate_universal_insight(data, scores)
+        return {
+            'scores': scores,
+            'total_score': sum(scores.values()),
+            'max_score': 150,
+            'insight': insight,
+            'assessment_data': data.dict()
+        }
+    except Exception as e:
+        logger.error(f"Assessment error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing assessment: {str(e)}")
 
 # --- PDF Report Generator ---
 def generate_pdf_report(data: UniversalScorecardInput, result: Dict[str, Any]) -> str:
-    """Generate a LaTeX-based PDF report for the assessment"""
-    # Sanitizing input to prevent LaTeX injection
-    def sanitize_latex(text: str) -> str:
-        return re.sub(r'[\\{}&$%#^_~]', lambda m: '\\' + m.group(0), text)
+    """Generate a PDF report using WeasyPrint"""
+    logger.info("Starting PDF report generation with WeasyPrint")
+
+    # Sanitizing input to prevent HTML injection
+    def sanitize_html(text: str) -> str:
+        if not isinstance(text, str):
+            text = str(text)
+        replacements = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;'
+        }
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+        return text
 
     # Extracting scores and insight
     scores = result['scores']
@@ -488,107 +511,169 @@ def generate_pdf_report(data: UniversalScorecardInput, result: Dict[str, Any]) -
     total_score = result['total_score']
     max_score = result['max_score']
 
-    # Preparing LaTeX content
-    latex_content = f"""
-\\documentclass{{article}}
-\\usepackage[utf8]{{inputenc}}
-\\usepackage{{geometry}}
-\\geometry{{a4paper, margin=1in}}
-\\usepackage{{titlesec}}
-\\usepackage{{enumitem}}
-\\usepackage{{parskip}}
-\\usepackage{{multicol}}
-\\usepackage{{amsmath}}
-\\usepackage{{xcolor}}
-\\definecolor{{primarycolor}}{{RGB}}{{0, 102, 204}}
-\\usepackage{{tcolorbox}}
-\\tcbuselibrary{{skins,breakable}}
-\\usepackage{{noto}}
+    # Sanitize all input fields
+    try:
+        sanitized_full_name = sanitize_html(data.full_name)
+        sanitized_company_name = sanitize_html(data.company_name)
+        sanitized_email = sanitize_html(data.email)
+        sanitized_insight = sanitize_html(insight.replace('**', '<strong>').replace('**', '</strong>'))
+        sanitized_business_type = sanitize_html(data.business_type)
+        sanitized_business_age = sanitize_html(data.business_age)
+        sanitized_team_size = sanitize_html(data.team_size)
+        sanitized_location_importance = sanitize_html(data.location_importance)
+        sanitized_primary_challenge = sanitize_html(data.primary_challenge)
+        sanitized_main_goal = sanitize_html(data.main_goal)
+    except Exception as e:
+        logger.error(f"Sanitization error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error sanitizing input: {str(e)}")
 
-\\titleformat{{\\section}}{{\\Large\\bfseries\\color{{primarycolor}}}}{{\\thesection}}{{1em}}{{}}
-\\titleformat{{\\subsection}}{{\\large\\bfseries}}{{\\thesubsection}}{{1em}}{{}}
-\\setlist{{noitemsep, topsep=0pt}}
+    # Preparing HTML content for PDF
+    html_content = f"""
+    <html>
+    <head>
+        <style>
+            body {{
+                font-family: 'Arial', sans-serif;
+                margin: 2cm;
+                color: #333;
+            }}
+            h1 {{
+                color: #0066cc;
+                text-align: center;
+                font-size: 24pt;
+            }}
+            h2 {{
+                color: #0066cc;
+                font-size: 18pt;
+                margin-top: 20px;
+            }}
+            .header {{
+                text-align: center;
+                margin-bottom: 20px;
+            }}
+            .header p {{
+                margin: 5px 0;
+                font-size: 12pt;
+            }}
+            .score-box {{
+                border: 2px solid #0066cc;
+                padding: 15px;
+                background-color: #f0f8ff;
+                border-radius: 5px;
+                margin: 20px 0;
+            }}
+            .score-box ul {{
+                list-style-type: none;
+                padding: 0;
+                column-count: 2;
+                column-gap: 20px;
+            }}
+            .score-box li {{
+                margin-bottom: 10px;
+                font-size: 12pt;
+            }}
+            .profile-box {{
+                margin: 20px 0;
+            }}
+            .profile-box dt {{
+                font-weight: bold;
+                margin-bottom: 5px;
+            }}
+            .profile-box dd {{
+                margin-bottom: 10px;
+                margin-left: 20px;
+            }}
+            .insights-box {{
+                border: 2px solid #0066cc;
+                padding: 15px;
+                background-color: #f0f8ff;
+                border-radius: 5px;
+                margin: 20px 0;
+            }}
+            .insights-box p {{
+                font-size: 12pt;
+                line-height: 1.5;
+            }}
+            .next-steps {{
+                margin-top: 20px;
+            }}
+            .next-steps p {{
+                font-size: 12pt;
+                line-height: 1.5;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>Universal Business Assessment Report</h1>
+            <p><strong>BeamX Solutions</strong></p>
+            <p>Prepared for: {sanitized_full_name}</p>
+            <p>Company: {sanitized_company_name}</p>
+            <p>Email: {sanitized_email}</p>
+            <p>Date: July 29, 2025</p>
+        </div>
 
-\\begin{{document}}
+        <h2>Assessment Overview</h2>
+        <p>This report provides a comprehensive evaluation of {sanitized_company_name}'s business performance across six key pillars: Financial Health, Growth & Marketing, Operations & Systems, Team & Management, Digital Adoption, and Strategic Position. The assessment yields a total score of {total_score} out of {max_score}, reflecting the business's current strengths and areas for improvement.</p>
 
-\\begin{{center}}
-    \\vspace*{{1cm}}
-    {{\\Huge \\textbf{{Universal Business Assessment Report}} \\par}}
-    \\vspace{{0.5cm}}
-    {{\\large \\textbf{{BeamX Solutions}} \\par}}
-    \\vspace{{0.5cm}}
-    {{\\normalsize Prepared for: {sanitize_latex(data.full_name)} \\par}}
-    {{\\normalsize Company: {sanitize_latex(data.company_name)} \\par}}
-    {{\\normalsize Email: {sanitize_latex(data.email)} \\par}}
-    {{\\normalsize Date: \\today \\par}}
-\\end{{center}}
+        <div class="score-box">
+            <h2>Assessment Scores</h2>
+            <ul>
+                <li>Financial Health: {scores['financial']}/25</li>
+                <li>Growth & Marketing: {scores['growth']}/25</li>
+                <li>Operations & Systems: {scores['operations']}/25</li>
+                <li>Team & Management: {scores['team']}/25</li>
+                <li>Digital Adoption: {scores['digital']}/25</li>
+                <li>Strategic Position: {scores['strategic']}/25</li>
+            </ul>
+            <p><strong>Total Score: {total_score}/{max_score}</strong></p>
+        </div>
 
-\\vspace{{1cm}}
+        <div class="profile-box">
+            <h2>Business Profile</h2>
+            <dl>
+                <dt>Business Type:</dt><dd>{sanitized_business_type}</dd>
+                <dt>Business Age:</dt><dd>{sanitized_business_age}</dd>
+                <dt>Team Size:</dt><dd>{sanitized_team_size}</dd>
+                <dt>Location Importance:</dt><dd>{sanitized_location_importance}</dd>
+                <dt>Primary Challenge:</dt><dd>{sanitized_primary_challenge}</dd>
+                <dt>Main Goal:</dt><dd>{sanitized_main_goal}</dd>
+            </dl>
+        </div>
 
-\\section*{{Assessment Overview}}
-This report provides a comprehensive evaluation of {sanitize_latex(data.company_name)}'s business performance across six key pillars: Financial Health, Growth \\& Marketing, Operations \\& Systems, Team \\& Management, Digital Adoption, and Strategic Position. The assessment yields a total score of {total_score} out of {max_score}, reflecting the business's current strengths and areas for improvement.
+        <div class="insights-box">
+            <h2>Insights and Recommendations</h2>
+            <p>{sanitized_insight.replace('\n', '<br>')}</p>
+        </div>
 
-\\begin{{tcolorbox}}[colback=blue!5!white, colframe=primarycolor, title=Assessment Scores]
-    \\begin{{multicols}}{{2}}
-        \\begin{{itemize}}
-            \\item Financial Health: {scores['financial']}/25
-            \\item Growth \\& Marketing: {scores['growth']}/25
-            \\item Operations \\& Systems: {scores['operations']}/25
-            \\item Team \\& Management: {scores['team']}/25
-            \\item Digital Adoption: {scores['digital']}/25
-            \\item Strategic Position: {scores['strategic']}/25
-        \\end{{itemize}}
-    \\end{{multicols}}
-\\end{{tcolorbox}}
+        <div class="next-steps">
+            <h2>Next Steps</h2>
+            <p>To implement the recommendations provided in this report, contact BeamX Solutions at <strong>info@beamxsolutions.com</strong> or visit <strong>https://beamxsolutions.com</strong> to schedule a consultation. Our team is ready to help you achieve your business goals with tailored solutions.</p>
+        </div>
+    </body>
+    </html>
+    """
 
-\\section*{{Business Profile}}
-\\begin{{description}}
-    \\item[Business Type:] {sanitize_latex(data.business_type)}
-    \\item[Business Age:] {sanitize_latex(data.business_age)}
-    \\item[Team Size:] {sanitize_latex(data.team_size)}
-    \\item[Location Importance:] {sanitize_latex(data.location_importance)}
-    \\item[Primary Challenge:] {sanitize_latex(data.primary_challenge)}
-    \\item[Main Goal:] {sanitize_latex(data.main_goal)}
-\\end{{description}}
+    # Creating a temporary directory for PDF processing
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            logger.info(f"Created temporary directory: {temp_dir}")
+            pdf_path = os.path.join(temp_dir, "report.pdf")
 
-\\section*{{Detailed Insights}}
-\\begin{{tcolorbox}}[colback=blue!5!white, colframe=primarycolor, breakable, title=Insights and Recommendations]
-    {sanitize_latex(insight.replace('**', '\\textbf{').replace('**', '}').replace('\n', '\\\\'))}
-\\end{{tcolorbox}}
+            # Generating PDF with WeasyPrint
+            logger.info(f"Generating PDF at {pdf_path}")
+            HTML(string=html_content).write_pdf(pdf_path)
 
-\\section*{{Next Steps}}
-To implement the recommendations provided in this report, contact BeamX Solutions at \\textbf{{info@beamxsolutions.com}} or visit \\textbf{{https://beamxsolutions.com}} to schedule a consultation. Our team is ready to help you achieve your business goals with tailored solutions.
+            # Checking if PDF was generated
+            if not os.path.exists(pdf_path):
+                logger.error(f"PDF file not found at {pdf_path}")
+                raise HTTPException(status_code=500, detail="PDF generation failed: Output file not found")
 
-\\end{{document}}
-"""
-
-    # Creating a temporary directory for LaTeX processing
-    with tempfile.TemporaryDirectory() as temp_dir:
-        tex_file_path = os.path.join(temp_dir, "report.tex")
-        pdf_file_path = os.path.join(temp_dir, "report.pdf")
-
-        # Writing LaTeX content to file
-        with open(tex_file_path, "w", encoding="utf-8") as tex_file:
-            tex_file.write(latex_content)
-
-        # Compiling LaTeX to PDF using latexmk
-        try:
-            subprocess.run(
-                ["latexmk", "-pdf", "-interaction=nonstopmode", tex_file_path],
-                cwd=temp_dir,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-        except subprocess.CalledProcessError as e:
-            raise HTTPException(status_code=500, detail=f"PDF generation error: {e.stderr.decode()}")
-
-        # Checking if PDF was generated
-        if not os.path.exists(pdf_file_path):
-            raise HTTPException(status_code=500, detail="PDF generation failed: Output file not found")
-
-        # Returning the path to the generated PDF
-        return pdf_file_path
+            logger.info(f"PDF generated successfully at {pdf_path}")
+            return pdf_path
+    except Exception as e:
+        logger.error(f"PDF generation error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"PDF generation error: {str(e)}")
 
 # --- API Endpoints ---
 @app.post("/assess", response_model=dict)
@@ -598,27 +683,33 @@ async def assess_business(data: UniversalScorecardInput):
         result = run_universal_assessment(data)
         return result
     except HTTPException as e:
+        logger.error(f"Assessment endpoint error: {str(e)}")
         raise e
     except Exception as e:
+        logger.error(f"Assessment endpoint error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing assessment: {str(e)}")
 
 @app.post("/download-report")
 async def download_report(data: UniversalScorecardInput):
     """Generate and download PDF report"""
+    logger.info("Received request to generate PDF report")
     try:
         # Running assessment to get results
         result = run_universal_assessment(data)
         # Generating PDF
         pdf_path = generate_pdf_report(data, result)
         # Returning the file for download
+        logger.info(f"Sending PDF file: {pdf_path}")
         return FileResponse(
             pdf_path,
             media_type="application/pdf",
-            filename=f"{sanitize_latex(data.company_name)}_Assessment_Report.pdf"
+            filename=f"{sanitize_html(data.company_name)}_Assessment_Report.pdf"
         )
     except HTTPException as e:
+        logger.error(f"Download report endpoint error: {str(e)}")
         raise e
     except Exception as e:
+        logger.error(f"Download report endpoint error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error generating PDF report: {str(e)}")
 
 @app.get("/")
