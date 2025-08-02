@@ -1,17 +1,17 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Literal, Dict, Any
+from typing import Literal, Dict, Any, Optional
 from anthropic import Anthropic, AnthropicError
+from supabase import create_client, Client
 import os
+from datetime import datetime
+import json
 
 app = FastAPI(title="Universal Business Assessment API")
 
 # CORS configuration
-origins = [
-    "https://beamxsolutions.com",  # frontend on Netlify
-]
-
+origins = ["https://beamxsolutions.com"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -20,20 +20,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Anthropic client with API key from environment variable
+# Initialize Supabase client
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_ANON_KEY")
+supabase: Client = create_client(supabase_url, supabase_key)
+
+# Initialize Anthropic client
 anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # --- Universal Business Assessment Input Schema ---
 class UniversalScorecardInput(BaseModel):
-    # FINANCIAL HEALTH
+    full_name: Optional[str] = None
+    company_name: Optional[str] = None
+    email: Optional[str] = None
     revenue: Literal["Under $10K", "$10K–$50K", "$50K–$250K", "$250K–$1M", "$1M–$5M", "Over $5M"]
     revenue_trend: Literal["Declining", "Flat", "Growing slowly (<10%)", "Growing moderately (10-25%)", "Growing rapidly (>25%)"]
     profit_margin_known: Literal["Yes, I track it closely", "Roughly know it", "No idea"]
     profit_margin: Literal["N/A", "Breaking even/Loss", "1-10%", "10-20%", "20-30%", "30%+"]
     cash_flow: Literal["Negative (spending savings)", "Break-even", "Positive but tight", "Healthy buffer", "Strong reserves"]
     financial_planning: Literal["No formal planning", "Basic budgeting", "Monthly financial reviews", "Detailed forecasting"]
-
-    # GROWTH & MARKETING
     customer_acquisition: Literal["Word of mouth only", "Some marketing efforts", "Consistent marketing", "Multi-channel strategy"]
     customer_cost_awareness: Literal["No idea", "Rough estimate", "Track precisely"]
     customer_retention: Literal["Don't track", "High turnover", "Average retention", "Strong retention", "Excellent loyalty"]
@@ -41,36 +46,26 @@ class UniversalScorecardInput(BaseModel):
     marketing_budget: Literal["No budget", "Under 5% of revenue", "5-10% of revenue", "Over 10% of revenue"]
     online_presence: Literal["No website/social", "Basic website", "Active online presence", "Strong digital brand"]
     customer_feedback: Literal["Don't collect", "Informal feedback", "Surveys/reviews", "Systematic feedback loops"]
-
-    # OPERATIONS & SYSTEMS
     record_keeping: Literal["Paper/scattered files", "Basic digital files", "Accounting software", "Integrated business software"]
     inventory_management: Literal["N/A", "Manual tracking", "Basic systems", "Automated systems"]
     scheduling_systems: Literal["Paper calendar", "Basic digital calendar", "Scheduling software", "Integrated workflow"]
     quality_control: Literal["No formal process", "Basic checks", "Standard procedures", "Systematic quality management"]
     supplier_relationships: Literal["N/A", "Transactional only", "Good relationships", "Strategic partnerships"]
-
-    # TEAM & MANAGEMENT
     team_size: Literal["Solo operation", "2-5 people", "6-15 people", "16-50 people", "50+ people"]
     hiring_process: Literal["N/A", "Informal hiring", "Basic process", "Structured interviews", "Comprehensive system"]
     employee_training: Literal["N/A", "On-the-job learning", "Basic training", "Formal programs"]
     delegation: Literal["Do everything myself", "Delegate basic tasks", "Delegate important work", "Team runs independently"]
     performance_tracking: Literal["No tracking", "Informal feedback", "Regular check-ins", "Formal performance reviews"]
-
-    # DIGITAL ADOPTION
     payment_systems: Literal["Cash/check only", "Basic card processing", "Multiple payment options", "Advanced payment tech"]
     data_backup: Literal["No system", "Manual backups", "Cloud storage", "Automated backup systems"]
     communication_tools: Literal["Phone/email only", "Basic messaging", "Team communication apps", "Integrated communication"]
     website_functionality: Literal["No website", "Basic info site", "Interactive features", "E-commerce/booking enabled"]
     social_media_use: Literal["No presence", "Occasional posts", "Regular updates", "Strategic content marketing"]
-
-    # STRATEGIC POSITION
     market_knowledge: Literal["Limited knowledge", "Basic awareness", "Good understanding", "Deep market insights"]
     competitive_advantage: Literal["Not sure", "Price/cost", "Quality/service", "Unique offering", "Market position"]
     customer_segments: Literal["Serve everyone", "1-2 main types", "Well-defined segments", "Specialized niches"]
     pricing_strategy: Literal["Match competitors", "Cost-plus margin", "Value-based pricing", "Dynamic/strategic pricing"]
     growth_planning: Literal["No plans", "Vague goals", "Basic plan", "Detailed strategy"]
-
-    # BUSINESS CONTEXT
     business_type: Literal[
         "Retail/E-commerce", "Service Business", "Restaurant/Food", "Healthcare/Medical",
         "Construction/Trades", "Professional Services", "Manufacturing",
@@ -91,6 +86,8 @@ class UniversalScorecardInput(BaseModel):
 
 # --- Complete Scoring Configuration ---
 SCORING_CONFIG: Dict[str, Dict[str, Any]] = {
+    # ... (no indentation changes needed here, keep as is)
+    # [The SCORING_CONFIG dictionary remains unchanged]
     'financial': {
         'fields': {
             'revenue': {
@@ -119,6 +116,7 @@ SCORING_CONFIG: Dict[str, Dict[str, Any]] = {
             }
         }
     },
+    # ... (rest of SCORING_CONFIG unchanged)
     'growth': {
         'fields': {
             'customer_acquisition': {
@@ -275,26 +273,20 @@ def _score_pillar(data: UniversalScorecardInput, pillar: str) -> int:
         weighted_score = field_score * field_config['weight']
         raw_score += weighted_score
 
-    # Normalize to 25 points
     normalized_score = (raw_score / config['max_raw']) * 25
     return min(round(normalized_score), 25)
 
 def score_financial(data: UniversalScorecardInput) -> int:
-    """Score financial health pillar"""
     return _score_pillar(data, 'financial')
 
 def score_growth(data: UniversalScorecardInput) -> int:
-    """Score growth & marketing pillar"""
     return _score_pillar(data, 'growth')
 
 def score_operations(data: UniversalScorecardInput) -> int:
-    """Score operations & systems pillar"""
     return _score_pillar(data, 'operations')
 
 def score_team(data: UniversalScorecardInput) -> int:
-    """Score team & management pillar with special solo handling"""
     if data.team_size == "Solo operation":
-        # For solo operations, focus primarily on delegation and systems
         delegation_config = SCORING_CONFIG['team']['fields']['delegation']
         delegation_score = delegation_config['map'][data.delegation]
         base_solo_score = 3.0
@@ -305,28 +297,26 @@ def score_team(data: UniversalScorecardInput) -> int:
     return _score_pillar(data, 'team')
 
 def score_digital(data: UniversalScorecardInput) -> int:
-    """Score digital adoption pillar"""
     return _score_pillar(data, 'digital')
 
 def score_strategic(data: UniversalScorecardInput) -> int:
-    """Score strategic position pillar"""
     return _score_pillar(data, 'strategic')
 
 # --- Enhanced Insight Generator ---
 def generate_universal_insight(data: UniversalScorecardInput, scores: Dict[str, int]) -> str:
-    """Generate comprehensive business insights with BeamX recommendations"""
     if not anthropic_client.api_key:
         raise HTTPException(status_code=500, detail="Anthropic API key is not configured")
 
     f, g, o, t, d, s = scores['financial'], scores['growth'], scores['operations'], scores['team'], scores['digital'], scores['strategic']
 
-    # Create detailed context from responses
     context_details = f"""
     BUSINESS PROFILE:
     - Business Type: {data.business_type}
     - Business Age: {data.business_age}
     - Team Size: {data.team_size}
     - Location Importance: {data.location_importance}
+    - Company Name: {data.company_name or 'Not provided'}
+    - Contact: {data.full_name or 'Not provided'} ({data.email or 'Not provided'})
 
     FINANCIAL SITUATION:
     - Revenue: {data.revenue} (Trend: {data.revenue_trend})
@@ -375,7 +365,6 @@ def generate_universal_insight(data: UniversalScorecardInput, scores: Dict[str, 
     - Main Goal: {data.main_goal}
     """
 
-    # Determine business maturity level
     maturity_indicators = {
         'startup': data.business_age in ["Less than 1 year", "1-3 years"] and data.team_size in ["Solo operation", "2-5 people"],
         'growing': data.business_age in ["1-3 years", "3-10 years"] and data.revenue in ["$50K–$250K", "$250K–$1M"],
@@ -387,7 +376,6 @@ def generate_universal_insight(data: UniversalScorecardInput, scores: Dict[str, 
     if maturity_indicators['solo_professional']:
         business_context = "solo professional practice"
 
-    # BeamX services context
     beamx_services_context = f"""
     BEAMX SOLUTIONS AVAILABLE:
     1. **Managed Intelligence Services** – Business intelligence reports & dashboards for key metrics and data-driven decisions
@@ -457,6 +445,22 @@ def run_universal_assessment(data: UniversalScorecardInput) -> Dict[str, Any]:
     }
 
     insight = generate_universal_insight(data, scores)
+
+    # Save to Supabase v2_assessments table
+    try:
+        response = supabase.table("v2_assessments").insert({
+            "full_name": data.full_name,
+            "company_name": data.company_name,
+            "email": data.email,
+            "business_type": data.business_type,
+            "business_age": data.business_age,
+            "scores": scores,
+            "total_score": sum(scores.values()),
+            "insight": insight,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving to Supabase: {str(e)}")
 
     return {
         'scores': scores,
