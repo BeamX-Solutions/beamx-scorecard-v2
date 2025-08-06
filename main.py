@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 import json
 
-app = FastAPI(title="Universal Business Assessment API")
+app = FastAPI(title="Advanced Business Assessment API")
 
 # CORS configuration
 origins = ["https://beamxsolutions.com"]
@@ -28,8 +28,8 @@ supabase: Client = create_client(supabase_url, supabase_key)
 # Initialize Anthropic client
 anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-# --- Universal Business Assessment Input Schema ---
-class UniversalScorecardInput(BaseModel):
+# --- Advanced Business Assessment Input Schema ---
+class AdvancedScorecardInput(BaseModel):
     full_name: Optional[str] = None
     company_name: Optional[str] = None
     email: Optional[str] = None
@@ -262,7 +262,7 @@ for pillar in SCORING_CONFIG:
     SCORING_CONFIG[pillar]['max_raw'] = _calculate_max_raw_score(pillar)
 
 # --- Scoring Functions ---
-def _score_pillar(data: UniversalScorecardInput, pillar: str) -> int:
+def _score_pillar(data: AdvancedScorecardInput, pillar: str) -> int:
     """Generic pillar scorer using configuration"""
     config = SCORING_CONFIG[pillar]
     raw_score = 0.0
@@ -276,16 +276,16 @@ def _score_pillar(data: UniversalScorecardInput, pillar: str) -> int:
     normalized_score = (raw_score / config['max_raw']) * 25
     return min(round(normalized_score), 25)
 
-def score_financial(data: UniversalScorecardInput) -> int:
+def score_financial(data: AdvancedScorecardInput) -> int:
     return _score_pillar(data, 'financial')
 
-def score_growth(data: UniversalScorecardInput) -> int:
+def score_growth(data: AdvancedScorecardInput) -> int:
     return _score_pillar(data, 'growth')
 
-def score_operations(data: UniversalScorecardInput) -> int:
+def score_operations(data: AdvancedScorecardInput) -> int:
     return _score_pillar(data, 'operations')
 
-def score_team(data: UniversalScorecardInput) -> int:
+def score_team(data: AdvancedScorecardInput) -> int:
     if data.team_size == "Solo operation":
         delegation_config = SCORING_CONFIG['team']['fields']['delegation']
         delegation_score = delegation_config['map'][data.delegation]
@@ -296,14 +296,14 @@ def score_team(data: UniversalScorecardInput) -> int:
         return min(round(normalized_score), 25)
     return _score_pillar(data, 'team')
 
-def score_digital(data: UniversalScorecardInput) -> int:
+def score_digital(data: AdvancedScorecardInput) -> int:
     return _score_pillar(data, 'digital')
 
-def score_strategic(data: UniversalScorecardInput) -> int:
+def score_strategic(data: AdvancedScorecardInput) -> int:
     return _score_pillar(data, 'strategic')
 
 # --- Enhanced Insight Generator ---
-def generate_universal_insight(data: UniversalScorecardInput, scores: Dict[str, int]) -> str:
+def generate_Advanced_insight(data: AdvancedScorecardInput, scores: Dict[str, int]) -> str:
     if not anthropic_client.api_key:
         raise HTTPException(status_code=500, detail="Anthropic API key is not configured")
 
@@ -433,7 +433,7 @@ def generate_universal_insight(data: UniversalScorecardInput, scores: Dict[str, 
         raise HTTPException(status_code=500, detail=f"Anthropic API error: {str(e)}")
 
 # --- Complete Assessment Function ---
-def run_universal_assessment(data: UniversalScorecardInput) -> Dict[str, Any]:
+def run_Advanced_assessment(data: AdvancedScorecardInput) -> Dict[str, Any]:
     """Run complete business assessment and generate insights"""
     scores = {
         'financial': score_financial(data),
@@ -444,11 +444,11 @@ def run_universal_assessment(data: UniversalScorecardInput) -> Dict[str, Any]:
         'strategic': score_strategic(data)
     }
 
-    insight = generate_universal_insight(data, scores)
+    insight = generate_Advanced_insight(data, scores)
 
-    # Save to Supabase v2_assessments table
+    # Save to Supabase advanced_assessments table
     try:
-        response = supabase.table("v2_assessments").insert({
+        response = supabase.table("advanced_assessments").insert({
             "full_name": data.full_name,
             "company_name": data.company_name,
             "email": data.email,
@@ -472,10 +472,10 @@ def run_universal_assessment(data: UniversalScorecardInput) -> Dict[str, Any]:
 
 # --- API Endpoints ---
 @app.post("/assess", response_model=dict)
-async def assess_business(data: UniversalScorecardInput):
+async def assess_business(data: AdvancedScorecardInput):
     """Run business assessment based on input data"""
     try:
-        result = run_universal_assessment(data)
+        result = run_Advanced_assessment(data)
         return result
     except HTTPException as e:
         raise e
@@ -485,4 +485,4 @@ async def assess_business(data: UniversalScorecardInput):
 @app.get("/")
 async def root():
     """Health check endpoint"""
-    return {"message": "Universal Business Assessment API is running"}
+    return {"message": "Advanced Business Assessment API is running"}
