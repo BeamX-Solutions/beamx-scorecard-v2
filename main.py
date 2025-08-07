@@ -86,8 +86,6 @@ class AdvancedScorecardInput(BaseModel):
 
 # --- Complete Scoring Configuration ---
 SCORING_CONFIG: Dict[str, Dict[str, Any]] = {
-    # ... (no indentation changes needed here, keep as is)
-    # [The SCORING_CONFIG dictionary remains unchanged]
     'financial': {
         'fields': {
             'revenue': {
@@ -116,7 +114,6 @@ SCORING_CONFIG: Dict[str, Dict[str, Any]] = {
             }
         }
     },
-    # ... (rest of SCORING_CONFIG unchanged)
     'growth': {
         'fields': {
             'customer_acquisition': {
@@ -448,17 +445,55 @@ def run_Advanced_assessment(data: AdvancedScorecardInput) -> Dict[str, Any]:
 
     # Save to Supabase advanced_assessments table
     try:
-        response = supabase.table("advanced_assessments").insert({
+        # Prepare data for insertion, including all input fields, scores, and insight
+        insert_data = {
             "full_name": data.full_name,
             "company_name": data.company_name,
             "email": data.email,
+            "revenue": data.revenue,
+            "revenue_trend": data.revenue_trend,
+            "profit_margin_known": data.profit_margin_known,
+            "profit_margin": data.profit_margin,
+            "cash_flow": data.cash_flow,
+            "financial_planning": data.financial_planning,
+            "customer_acquisition": data.customer_acquisition,
+            "customer_cost_awareness": data.customer_cost_awareness,
+            "customer_retention": data.customer_retention,
+            "repeat_business": data.repeat_business,
+            "marketing_budget": data.marketing_budget,
+            "online_presence": data.online_presence,
+            "customer_feedback": data.customer_feedback,
+            "record_keeping": data.record_keeping,
+            "inventory_management": data.inventory_management,
+            "scheduling_systems": data.scheduling_systems,
+            "quality_control": data.quality_control,
+            "supplier_relationships": data.supplier_relationships,
+            "team_size": data.team_size,
+            "hiring_process": data.hiring_process,
+            "employee_training": data.employee_training,
+            "delegation": data.delegation,
+            "performance_tracking": data.performance_tracking,
+            "payment_systems": data.payment_systems,
+            "data_backup": data.data_backup,
+            "communication_tools": data.communication_tools,
+            "website_functionality": data.website_functionality,
+            "social_media_use": data.social_media_use,
+            "market_knowledge": data.market_knowledge,
+            "competitive_advantage": data.competitive_advantage,
+            "customer_segments": data.customer_segments,
+            "pricing_strategy": data.pricing_strategy,
+            "growth_planning": data.growth_planning,
             "business_type": data.business_type,
             "business_age": data.business_age,
+            "primary_challenge": data.primary_challenge,
+            "main_goal": data.main_goal,
+            "location_importance": data.location_importance,
             "scores": scores,
             "total_score": sum(scores.values()),
             "insight": insight,
             "created_at": datetime.now().isoformat()
-        }).execute()
+        }
+        response = supabase.table("advanced_assessments").insert(insert_data).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error saving to Supabase: {str(e)}")
 
@@ -467,7 +502,7 @@ def run_Advanced_assessment(data: AdvancedScorecardInput) -> Dict[str, Any]:
         'total_score': sum(scores.values()),
         'max_score': 150,
         'insight': insight,
-        'assessment_data': data.dict()
+        'assessment_data': insert_data  # Return the same data structure for consistency
     }
 
 # --- API Endpoints ---
