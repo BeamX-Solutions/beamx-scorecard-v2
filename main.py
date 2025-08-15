@@ -488,7 +488,12 @@ def run_Advanced_assessment(data: AdvancedScorecardInput) -> Dict[str, Any]:
             "primary_challenge": data.primary_challenge,
             "main_goal": data.main_goal,
             "location_importance": data.location_importance,
-            "scores": scores,
+            "financial_score": scores['financial'],
+            "growth_score": scores['growth'],
+            "operations_score": scores['operations'],
+            "team_score": scores['team'],
+            "digital_score": scores['digital'],
+            "strategic_score": scores['strategic'],
             "total_score": sum(scores.values()),
             "insight": insight,
             "created_at": datetime.now().isoformat()
