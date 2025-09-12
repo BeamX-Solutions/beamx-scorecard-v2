@@ -2,4 +2,9 @@ fastapi
 uvicorn
 pydantic
 anthropic
+pydantic[email]
 supabase
+python-multipart
+reportlab
+python-dotenv
+resend

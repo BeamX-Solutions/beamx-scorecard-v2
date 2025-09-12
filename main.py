@@ -1,17 +1,33 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, EmailStr
 from typing import Literal, Dict, Any, Optional
 from anthropic import Anthropic, AnthropicError
 from supabase import create_client, Client
 import os
 from datetime import datetime
 import json
+import io
+import base64
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+import resend
+import logging
 
-app = FastAPI(title="Advanced Business Assessment API")
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Advanced Business Assessment API", version="1.0.0")
 
 # CORS configuration
-origins = ["https://beamxsolutions.com"]
+origins = [
+    "https://beamxsolutions.com",
+    "http://localhost:3000",  # For local development
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -23,16 +39,40 @@ app.add_middleware(
 # Initialize Supabase client
 supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_ANON_KEY")
-supabase: Client = create_client(supabase_url, supabase_key)
+if not supabase_url or not supabase_key:
+    raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set")
+try:
+    supabase: Client = create_client(supabase_url, supabase_key)
+    logger.info("Supabase client initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize Supabase client: {e}")
+    raise ValueError(f"Failed to initialize Supabase client: {e}")
 
 # Initialize Anthropic client
-anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+if not anthropic_api_key:
+    raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+try:
+    anthropic_client = Anthropic(api_key=anthropic_api_key)
+    logger.info("Anthropic client initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize Anthropic client: {e}")
+    raise ValueError(f"Failed to initialize Anthropic client: {e}")
+
+# Initialize Resend client
+resend_api_key = os.getenv("RESEND_API_KEY")
+from_email = os.getenv("FROM_EMAIL", "noreply@beamxsolutions.com")
+if not resend_api_key:
+    logger.warning("Resend API key not configured. Email functionality will be disabled.")
+else:
+    resend.api_key = resend_api_key
+    logger.info("Resend client initialized successfully")
 
 # --- Advanced Business Assessment Input Schema ---
 class AdvancedScorecardInput(BaseModel):
     full_name: Optional[str] = None
     company_name: Optional[str] = None
-    email: Optional[str] = None
+    email: Optional[EmailStr] = None
     revenue: Literal["Under $10K", "$10K–$50K", "$50K–$250K", "$250K–$1M", "$1M–$5M", "Over $5M"]
     revenue_trend: Literal["Declining", "Flat", "Growing slowly (<10%)", "Growing moderately (10-25%)", "Growing rapidly (>25%)"]
     profit_margin_known: Literal["Yes, I track it closely", "Roughly know it", "No idea"]
@@ -83,6 +123,12 @@ class AdvancedScorecardInput(BaseModel):
         "Improve quality/service", "Prepare for succession/sale"
     ]
     location_importance: Literal["Fully location-dependent", "Mostly local", "Regional reach", "National/global"]
+
+# Pydantic model for email request
+class EmailRequest(BaseModel):
+    email: EmailStr = Field(..., description="Recipient email address")
+    result: Dict = Field(..., description="Assessment results")
+    formData: AdvancedScorecardInput = Field(..., description="Original form data")
 
 # --- Complete Scoring Configuration ---
 SCORING_CONFIG: Dict[str, Dict[str, Any]] = {
@@ -299,6 +345,256 @@ def score_digital(data: AdvancedScorecardInput) -> int:
 def score_strategic(data: AdvancedScorecardInput) -> int:
     return _score_pillar(data, 'strategic')
 
+# --- PDF Report Generation ---
+def generate_pdf_report(result: Dict, form_data: AdvancedScorecardInput) -> io.BytesIO:
+    """Generate a PDF report of the advanced business assessment results"""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1*inch)
+    styles = getSampleStyleSheet()
+    story = []
+
+    # Custom styles
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        spaceAfter=30,
+        textColor=colors.HexColor('#1f2937'),
+        alignment=1
+    )
+    
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=16,
+        spaceAfter=12,
+        textColor=colors.HexColor('#374151')
+    )
+
+    # Title and header
+    story.append(Paragraph("Advanced Business Assessment Report", title_style))
+    story.append(Paragraph("BeamX Solutions", styles['Normal']))
+    story.append(Paragraph(f"Generated on {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
+    story.append(Spacer(1, 20))
+
+    # Business Profile
+    story.append(Paragraph("Business Profile", heading_style))
+    story.append(Paragraph(f"<b>Company Name:</b> {form_data.company_name or 'Not provided'}", styles['Normal']))
+    story.append(Paragraph(f"<b>Contact:</b> {form_data.full_name or 'Not provided'}", styles['Normal']))
+    story.append(Paragraph(f"<b>Business Type:</b> {form_data.business_type}", styles['Normal']))
+    story.append(Paragraph(f"<b>Business Age:</b> {form_data.business_age}", styles['Normal']))
+    story.append(Paragraph(f"<b>Primary Challenge:</b> {form_data.primary_challenge}", styles['Normal']))
+    story.append(Paragraph(f"<b>Main Goal:</b> {form_data.main_goal}", styles['Normal']))
+    story.append(Spacer(1, 20))
+
+    # Overall Score
+    story.append(Paragraph("Overall Assessment", heading_style))
+    story.append(Paragraph(f"<b>Total Score:</b> {result['total_score']}/150", styles['Normal']))
+    story.append(Spacer(1, 20))
+
+    # Score Breakdown Table
+    story.append(Paragraph("Detailed Score Breakdown", heading_style))
+    breakdown_data = [
+        ['Category', 'Your Score', 'Max Score', 'Percentage'],
+        ['Financial Health', f"{result['scores']['financial']}", '25', f"{(result['scores']['financial']/25)*100:.0f}%"],
+        ['Growth & Marketing', f"{result['scores']['growth']}", '25', f"{(result['scores']['growth']/25)*100:.0f}%"],
+        ['Operations & Systems', f"{result['scores']['operations']}", '25', f"{(result['scores']['operations']/25)*100:.0f}%"],
+        ['Team & Management', f"{result['scores']['team']}", '25', f"{(result['scores']['team']/25)*100:.0f}%"],
+        ['Digital Adoption', f"{result['scores']['digital']}", '25', f"{(result['scores']['digital']/25)*100:.0f}%"],
+        ['Strategic Position', f"{result['scores']['strategic']}", '25', f"{(result['scores']['strategic']/25)*100:.0f}%"],
+    ]
+    
+    breakdown_table = Table(breakdown_data, colWidths=[2.5*inch, 1*inch, 1*inch, 1*inch])
+    breakdown_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f3f4f6')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#1f2937')),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+        ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e5e7eb'))
+    ]))
+    
+    story.append(breakdown_table)
+    story.append(Spacer(1, 30))
+
+    # Insights Section
+    story.append(Paragraph("Strategic Insights & Recommendations", heading_style))
+    insight_text = result.get('insight', '')
+    insight_paragraphs = insight_text.split('\n')
+    
+    for para in insight_paragraphs:
+        if para.strip():
+            if para.startswith('**') and para.endswith('**'):
+                clean_para = para.strip('*')
+                story.append(Paragraph(f"<b>{clean_para}</b>", styles['Normal']))
+            elif para.startswith('•'):
+                story.append(Paragraph(para, styles['Normal']))
+            else:
+                story.append(Paragraph(para, styles['Normal']))
+            story.append(Spacer(1, 6))
+    
+    story.append(Spacer(1, 30))
+
+    # Next Steps and Contact Information
+    story.append(Paragraph("Ready to Take Action?", heading_style))
+    story.append(Paragraph("Based on your advanced assessment results, BeamX Solutions can help you implement the strategic recommendations outlined above.", styles['Normal']))
+    story.append(Spacer(1, 12))
+    
+    story.append(Paragraph("<b>Contact Us:</b>", styles['Normal']))
+    story.append(Paragraph("🌐 Website: https://beamxsolutions.com", styles['Normal']))
+    story.append(Paragraph("📧 Email: info@beamxsolutions.com", styles['Normal']))
+    story.append(Paragraph("📞 Schedule a consultation: https://beamxsolutions.com/contact", styles['Normal']))
+    
+    # Build PDF
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+# --- Email Sending Function ---
+def send_email_with_resend(recipient_email: str, result: Dict, form_data: AdvancedScorecardInput) -> bool:
+    """Send advanced assessment results via email with PDF attachment using Resend"""
+    if not resend_api_key:
+        logger.error("Resend API key not configured")
+        return False
+    
+    try:
+        # Generate PDF
+        pdf_buffer = generate_pdf_report(result, form_data)
+        pdf_content = pdf_buffer.read()
+        pdf_base64 = base64.b64encode(pdf_content).decode()
+
+        # Create email content
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                .header {{ background-color: #1f2937; color: white; padding: 20px; text-align: center; }}
+                .content {{ padding: 20px; background-color: #f9f9f9; }}
+                .score-box {{ background-color: #e5f3ff; padding: 15px; margin: 15px 0; border-radius: 5px; }}
+                .breakdown {{ background-color: white; padding: 15px; margin: 10px 0; border-left: 4px solid #3b82f6; }}
+                .footer {{ background-color: #1f2937; color: white; padding: 20px; text-align: center; }}
+                .cta-button {{ 
+                    display: inline-block; 
+                    background-color: #3b82f6; 
+                    color: white; 
+                    padding: 12px 24px; 
+                    text-decoration: none; 
+                    border-radius: 5px; 
+                    margin: 10px 0;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>Your Advanced Business Assessment Results</h1>
+                    <p>BeamX Solutions</p>
+                </div>
+                
+                <div class="content">
+                    <p>Hello {form_data.full_name or 'Valued Customer'},</p>
+                    
+                    <p>Thank you for completing the BeamX Solutions Advanced Business Assessment. Your comprehensive results are ready!</p>
+                    
+                    <div class="score-box">
+                        <h2>Your Overall Score: {result['total_score']}/150</h2>
+                    </div>
+                    
+                    <h3>Score Breakdown:</h3>
+                    <div class="breakdown">
+                        <p><strong>💰 Financial Health:</strong> {result['scores']['financial']}/25</p>
+                        <p><strong>📈 Growth & Marketing:</strong> {result['scores']['growth']}/25</p>
+                        <p><strong>⚙️ Operations & Systems:</strong> {result['scores']['operations']}/25</p>
+                        <p><strong>👥 Team & Management:</strong> {result['scores']['team']}/25</p>
+                        <p><strong>💻 Digital Adoption:</strong> {result['scores']['digital']}/25</p>
+                        <p><strong>🎯 Strategic Position:</strong> {result['scores']['strategic']}/25</p>
+                    </div>
+                    
+                    <p>📄 <strong>Your detailed assessment report is attached as a PDF</strong> with in-depth recommendations tailored to your {form_data.business_type.lower()} business.</p>
+                    
+                    <h3>What's Next?</h3>
+                    <p>Ready to address your primary challenge of "{form_data.primary_challenge.lower()}" and achieve your goal of "{form_data.main_goal.lower()}"? Our team specializes in helping {form_data.business_type.lower()} businesses like yours drive sustainable growth.</p>
+                    
+                    <div style="text-align: center;">
+                        <a href="https://beamxsolutions.com/contact" class="cta-button">Schedule Your Free Consultation</a>
+                    </div>
+                </div>
+                
+                <div class="footer">
+                    <p><strong>BeamX Solutions</strong></p>
+                    <p>🌐 <a href="https://beamxsolutions.com" style="color: #60a5fa;">beamxsolutions.com</a></p>
+                    <p>📧 info@beamxsolutions.com</p>
+                    <hr style="border-color: #374151; margin: 20px 0;">
+                    <p style="font-size: 12px;">This email was generated from your advanced business assessment at beamxsolutions.com/advanced-business-assessment</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Plain text version
+        text_content = f"""
+        Your Advanced Business Assessment Results - BeamX Solutions
+
+        Hello {form_data.full_name or 'Valued Customer'},
+
+        Thank you for completing the BeamX Solutions Advanced Business Assessment. Your results are ready!
+
+        Your Score: {result['total_score']}/150
+
+        Score Breakdown:
+        • Financial Health: {result['scores']['financial']}/25
+        • Growth & Marketing: {result['scores']['growth']}/25
+        • Operations & Systems: {result['scores']['operations']}/25
+        • Team & Management: {result['scores']['team']}/25
+        • Digital Adoption: {result['scores']['digital']}/25
+        • Strategic Position: {result['scores']['strategic']}/25
+
+        Your detailed assessment report is attached as a PDF with personalized recommendations.
+
+        What's Next?
+        Ready to address your primary challenge of "{form_data.primary_challenge.lower()}" and achieve your goal of "{form_data.main_goal.lower()}"? Our team specializes in helping {form_data.business_type.lower()} businesses achieve sustainable growth.
+
+        Contact Us:
+        Website: https://beamxsolutions.com
+        Email: info@beamxsolutions.com
+        Schedule a consultation: https://beamxsolutions.com/contact
+
+        Best regards,
+        The BeamX Solutions Team
+
+        ---
+        This email was generated from your advanced business assessment at https://beamxsolutions.com/advanced-business-assessment
+        """
+        
+        # Send email using Resend
+        params = {
+            "from": from_email,
+            "to": [recipient_email],
+            "subject": f"Your Advanced Business Assessment Results: {result['total_score']}/150 📊",
+            "html": html_content,
+            "text": text_content,
+            "attachments": [
+                {
+                    "filename": "BeamX_Advanced_Assessment_Report.pdf",
+                    "content": pdf_base64
+                }
+            ]
+        }
+        
+        email_response = resend.Emails.send(params)
+        logger.info(f"Email sent successfully via Resend to {recipient_email}, ID: {email_response.get('id', 'unknown')}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to send email via Resend to {recipient_email}: {str(e)}")
+        return False
+
 # --- Enhanced Insight Generator ---
 def generate_Advanced_insight(data: AdvancedScorecardInput, scores: Dict[str, int]) -> str:
     if not anthropic_client.api_key:
@@ -445,7 +741,6 @@ def run_Advanced_assessment(data: AdvancedScorecardInput) -> Dict[str, Any]:
 
     # Save to Supabase advanced_assessments table
     try:
-        # Prepare data for insertion, including all input fields, scores, and insight
         insert_data = {
             "full_name": data.full_name,
             "company_name": data.company_name,
@@ -499,7 +794,9 @@ def run_Advanced_assessment(data: AdvancedScorecardInput) -> Dict[str, Any]:
             "created_at": datetime.now().isoformat()
         }
         response = supabase.table("advanced_assessments").insert(insert_data).execute()
+        logger.info(f"Successfully saved assessment with ID: {response.data[0]['id'] if response.data else 'unknown'}")
     except Exception as e:
+        logger.error(f"Error saving to Supabase: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error saving to Supabase: {str(e)}")
 
     return {
@@ -507,7 +804,7 @@ def run_Advanced_assessment(data: AdvancedScorecardInput) -> Dict[str, Any]:
         'total_score': sum(scores.values()),
         'max_score': 150,
         'insight': insight,
-        'assessment_data': insert_data  # Return the same data structure for consistency
+        'assessment_data': insert_data
     }
 
 # --- API Endpoints ---
@@ -520,9 +817,68 @@ async def assess_business(data: AdvancedScorecardInput):
     except HTTPException as e:
         raise e
     except Exception as e:
+        logger.error(f"Error processing assessment: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing assessment: {str(e)}")
+
+@app.post("/email-results")
+async def email_results(email_request: EmailRequest):
+    """Send advanced assessment results via email using Resend"""
+    logger.info(f"Sending email via Resend to {email_request.email}")
+    
+    try:
+        # Send email with PDF attachment
+        success = send_email_with_resend(
+            email_request.email,
+            email_request.result,
+            email_request.formData
+        )
+        
+        if success:
+            # Log the email send to Supabase
+            try:
+                supabase.table("email_logs").insert({
+                    "recipient_email": email_request.email,
+                    "total_score": email_request.result.get("total_score"),
+                    "industry": email_request.formData.business_type,
+                    "sent_at": datetime.now().isoformat(),
+                    "email_provider": "resend"
+                }).execute()
+                logger.info(f"Email send logged to database for {email_request.email}")
+            except Exception as e:
+                logger.warning(f"Failed to log email send to database: {e}")
+            
+            return {
+                "status": "success",
+                "message": "Email sent successfully via Resend",
+                "provider": "resend"
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to send email via Resend"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in email_results: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"An unexpected error occurred while sending email: {str(e)}"
+        )
 
 @app.get("/")
 async def root():
     """Health check endpoint"""
-    return {"message": "Advanced Business Assessment API is running"}
+    return {
+        "message": "Advanced Business Assessment API is running",
+        "version": "1.0.0",
+        "email_provider": "resend" if resend_api_key else None,
+        "email_configured": bool(resend_api_key)
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    logger.info(f"Starting server on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
