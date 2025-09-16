@@ -445,7 +445,7 @@ def generate_pdf_report(result: Dict, form_data: AdvancedScorecardInput) -> io.B
     story.append(Paragraph("<b>Contact Us:</b>", styles['Normal']))
     story.append(Paragraph("🌐 Website: https://beamxsolutions.com", styles['Normal']))
     story.append(Paragraph("📧 Email: info@beamxsolutions.com", styles['Normal']))
-    story.append(Paragraph("📞 Schedule a consultation: https://beamxsolutions.com/contact", styles['Normal']))
+    story.append(Paragraph("📞 Schedule a consultation: https://calendly.com/beamxsolutions", styles['Normal']))
     
     # Build PDF
     doc.build(story)
@@ -521,7 +521,7 @@ def send_email_with_resend(recipient_email: str, result: Dict, form_data: Advanc
                     <p>Ready to address your primary challenge of "{form_data.primary_challenge.lower()}" and achieve your goal of "{form_data.main_goal.lower()}"? Our team specializes in helping {form_data.business_type.lower()} businesses like yours drive sustainable growth.</p>
                     
                     <div style="text-align: center;">
-                        <a href="https://beamxsolutions.com/contact" class="cta-button">Schedule Your Free Consultation</a>
+                        <a href="https://calendly.com/beamxsolutions" class="cta-button">Schedule Your Free Consultation</a>
                     </div>
                 </div>
                 
@@ -563,7 +563,7 @@ def send_email_with_resend(recipient_email: str, result: Dict, form_data: Advanc
         Contact Us:
         Website: https://beamxsolutions.com
         Email: info@beamxsolutions.com
-        Schedule a consultation: https://beamxsolutions.com/contact
+        Schedule a consultation: https://calendly.com/beamxsolutions
 
         Best regards,
         The BeamX Solutions Team
@@ -574,7 +574,7 @@ def send_email_with_resend(recipient_email: str, result: Dict, form_data: Advanc
         
         # Send email using Resend
         params = {
-            "from": from_email,
+            "from": f"BeamX Solutions <{from_email}>",
             "to": [recipient_email],
             "subject": f"Your Advanced Business Assessment Results: {result['total_score']}/150 📊",
             "html": html_content,
