@@ -458,90 +458,235 @@ def send_email_with_resend(recipient_email: str, result: Dict, form_data: Advanc
     if not resend_api_key:
         logger.error("Resend API key not configured")
         return False
-    
+
     try:
         # Generate PDF
         pdf_buffer = generate_pdf_report(result, form_data)
         pdf_content = pdf_buffer.read()
         pdf_base64 = base64.b64encode(pdf_content).decode()
 
-        # Create email content
+        # Create email content - optimized for email clients
         html_content = f"""
         <!DOCTYPE html>
-        <html>
+        <html lang="en">
         <head>
-            <style>
-                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                .header {{ background-color: #1f2937; color: white; padding: 20px; text-align: center; }}
-                .content {{ padding: 20px; background-color: #f9f9f9; }}
-                .score-box {{ background-color: #e5f3ff; padding: 15px; margin: 15px 0; border-radius: 5px; }}
-                .breakdown {{ background-color: white; padding: 15px; margin: 10px 0; border-left: 4px solid #3b82f6; }}
-                .footer {{ background-color: #1f2937; color: white; padding: 20px; text-align: center; }}
-                .cta-button {{ 
-                    display: inline-block; 
-                    background-color: #3b82f6; 
-                    color: white; 
-                    padding: 12px 24px; 
-                    text-decoration: none; 
-                    border-radius: 5px; 
-                    margin: 10px 0;
-                }}
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>BeamX Solutions - Advanced Business Assessment Results</title>
+            <!--[if mso]>
+            <style type="text/css">
+                body, table, td {{font-family: Arial, sans-serif !important;}}
             </style>
+            <![endif]-->
         </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>Your Advanced Business Assessment Results</h1>
-                    <p>BeamX Solutions</p>
-                </div>
-                
-                <div class="content">
-                    <p>Hello {form_data.full_name or 'Valued Customer'},</p>
-                    
-                    <p>Thank you for completing the BeamX Solutions Advanced Business Assessment. Your comprehensive results are ready!</p>
-                    
-                    <div class="score-box">
-                        <h2>Your Overall Score: {result['total_score']}/150</h2>
-                    </div>
-                    
-                    <h3>Score Breakdown:</h3>
-                    <div class="breakdown">
-                        <p><strong>💰 Financial Health:</strong> {result['scores']['financial']}/25</p>
-                        <p><strong>📈 Growth & Marketing:</strong> {result['scores']['growth']}/25</p>
-                        <p><strong>⚙️ Operations & Systems:</strong> {result['scores']['operations']}/25</p>
-                        <p><strong>👥 Team & Management:</strong> {result['scores']['team']}/25</p>
-                        <p><strong>💻 Digital Adoption:</strong> {result['scores']['digital']}/25</p>
-                        <p><strong>🎯 Strategic Position:</strong> {result['scores']['strategic']}/25</p>
-                    </div>
-                    
-                    <p>📄 <strong>Your detailed assessment report is attached as a PDF</strong> with in-depth recommendations tailored to your {form_data.business_type.lower()} business.</p>
-                    
-                    <h3>What's Next?</h3>
-                    <p>Ready to address your primary challenge of "{form_data.primary_challenge.lower()}" and achieve your goal of "{form_data.main_goal.lower()}"? Our team specializes in helping {form_data.business_type.lower()} businesses like yours drive sustainable growth.</p>
-                    
-                    <div style="text-align: center;">
-                        <a href="https://calendly.com/beamxsolutions" class="cta-button">Schedule Your Free Consultation</a>
-                    </div>
-                </div>
-                
-                <div class="footer">
-                    <p><strong>BeamX Solutions</strong></p>
-                    <p>🌐 <a href="https://beamxsolutions.com" style="color: #60a5fa;">beamxsolutions.com</a></p>
-                    <p>📧 info@beamxsolutions.com</p>
-                    <hr style="border-color: #374151; margin: 20px 0;">
-                    <p style="font-size: 12px;">This email was generated from your advanced business assessment at beamxsolutions.com/advanced-business-assessment</p>
-                </div>
-            </div>
+        <body style="margin: 0; padding: 0; background-color: white; font-family: Arial, Helvetica, sans-serif;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #white;">
+                <tr>
+                    <td align="center" style="padding: 20px 0;">
+                        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #f5f5f5;">
+
+                            <!-- Header -->
+                            <tr>
+                                <td style="background-color: #02428e; padding: 40px 20px; text-align: center;">
+                                    <img src="https://beamxsolutions.com/asset-1-2.png" alt="BeamX Solutions" width="112" height="50" style="display: block; margin: 0 auto 24px;" />
+                                    <h1 style="color: #ffffff; font-size: 36px; font-weight: 600; margin: 0; line-height: 48px; font-family: Arial, Helvetica, sans-serif;">
+                                        Your Advanced Business<br>Assessment Results
+                                    </h1>
+                                </td>
+                            </tr>
+
+                            <!-- Spacer -->
+                            <tr><td style="height: 28px;"></td></tr>
+
+                            <!-- Introduction -->
+                            <tr>
+                                <td style="padding: 0 30px;">
+                                    <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0;">
+                                        Hello {form_data.full_name or ''}!<br><br>
+                                        Thank you for completing the BeamX Solutions Advanced Business Assessment. Your tailored results are ready!
+                                    </p>
+                                </td>
+                            </tr>
+
+                            <!-- Spacer -->
+                            <tr><td style="height: 28px;"></td></tr>
+
+                            <!-- Score Card -->
+                            <tr>
+                                <td align="center">
+                                    <table width="347" cellpadding="28" cellspacing="0" style="background-color: #008bd8; border-radius: 8px;">
+                                        <tr>
+                                            <td>
+                                                <p style="color: #ffffff; font-size: 20px; font-weight: 700; line-height: 28px; margin: 0;">
+                                                    Your Overall Score: {result['total_score']}/150
+                                                </p>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+
+                            <!-- Spacer -->
+                            <tr><td style="height: 28px;"></td></tr>
+
+                            <!-- Score Breakdown Card -->
+                            <tr>
+                                <td style="padding: 0 30px;">
+                                    <table width="100%" cellpadding="20" cellspacing="0" style="background-color: #ffffff; border-radius: 8px;">
+                                        <tr>
+                                            <td>
+                                                <h2 style="color: #008bd8; font-size: 16px; font-weight: 700; margin: 0 0 24px 0;">Score Breakdown</h2>
+
+                                                <!-- Financial Health -->
+                                                <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0 0 12px 0;">
+                                                    <span style="font-weight: 600;">💰 Financial Health:</span> {result['scores']['financial']}/25
+                                                </p>
+
+                                                <!-- Growth Readiness -->
+                                                <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0 0 12px 0;">
+                                                    <span style="font-weight: 600;">📈 Growth & Marketing:</span> {result['scores']['growth']}/25
+                                                </p>
+
+                                                <!-- Digital Maturity -->
+                                                <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0 0 12px 0;">
+                                                    <span style="font-weight: 600;">⚙️ Operations & Systems:</span> {result['scores']['operations']}/25
+                                                </p>
+
+                                                <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0 0 12px 0;">
+                                                    <span style="font-weight: 600;">👥 Team & Management:</span> {result['scores']['team']}/25
+                                                </p>
+
+                                                <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0 0 12px 0;">
+                                                    <span style="font-weight: 600;">💻 Digital Adoption:</span> {result['scores']['digital']}/25
+                                                </p>
+
+                                                <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0;">
+                                                    <span style="font-weight: 600;">🎯 Strategic Position:</span> {result['scores']['strategic']}/25
+                                                </p>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+
+                            <!-- Spacer -->
+                            <tr><td style="height: 28px;"></td></tr>
+
+                            <!-- PDF Info -->
+                            <tr>
+                                <td style="padding: 0 30px;">
+                                    <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0;">
+                                        Your detailed assessment report is attached as a PDF with personalized recommendations and next steps.
+                                    </p>
+                                </td>
+                            </tr>
+
+                            <!-- Spacer -->
+                            <tr><td style="height: 28px;"></td></tr>
+
+                            <!-- What's Next Title -->
+                            <tr>
+                                <td style="padding: 0 30px;">
+                                    <h2 style="color: #008bd8; font-size: 16px; font-weight: 700; margin: 0;">What's Next?</h2>
+                                </td>
+                            </tr>
+
+                            <!-- Spacer -->
+                            <tr><td style="height: 28px;"></td></tr>
+
+                            <!-- What's Next Content -->
+                            <tr>
+                                <td style="padding: 0 30px;">
+                                    <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0;">
+                                        Ready to transform these insights into growth? Our team specializes in helping {form_data.business_type.lower()} businesses like yours overcome challenges like "{form_data.primary_challenge.lower()}" and achieve your goal of "{form_data.main_goal.lower()}" with sustainable growth.
+                                    </p>
+                                </td>
+                            </tr>
+
+                            <!-- Spacer -->
+                            <tr><td style="height: 28px;"></td></tr>
+
+                            <!-- CTA Button -->
+                            <tr>
+                                <td align="center">
+                                    <table cellpadding="0" cellspacing="0">
+                                        <tr>
+                                            <td style="background-color: #f27900; border-radius: 8px;">
+                                                <a href="https://calendly.com/beamxsolutions" style="display: inline-block; padding: 12px 24px; color: #ffffff; text-decoration: none; font-size: 14px; font-weight: 600; font-family: Arial, Helvetica, sans-serif;">
+                                                    Schedule Your Free Consultation
+                                                </a>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+
+                            <!-- Spacer -->
+                            <tr><td style="height: 28px;"></td></tr>
+
+                            <!-- Footer -->
+                            <tr>
+                                <td style="background-color: #02428e; padding: 24px 20px; text-align: center;">
+                                    <p style="color: #ffffff; font-size: 14px; margin: 0 0 16px 0;">Follow us on</p>
+
+                                    <!-- Social Icons -->
+                                    <table cellpadding="0" cellspacing="0" align="center" style="margin: 0 auto 32px auto; text-align: center;">
+                                        <tr>
+                                            <!-- Facebook -->
+                                            <td style="padding: 0 12px;">
+                                                <a href="https://facebook.com/beamxsolutions" style="display: inline-block; text-decoration: none;">
+                                                    <img src="https://beamxsolutions.com/facebook-img.png" alt="Facebook" width="24" height="24" style="display: block;">
+                                                </a>
+                                            </td>
+                                            <!-- Instagram -->
+                                            <td style="padding: 0 12px;">
+                                                <a href="https://instagram.com/beamxsolutions" style="display: inline-block; text-decoration: none;">
+                                                    <img src="https://beamxsolutions.com/instagram-img.png" alt="Instagram" width="24" height="24" style="display: block;">
+                                                </a>
+                                            </td>
+                                            <!-- Twitter/X -->
+                                            <td style="padding: 0 12px;">
+                                                <a href="https://twitter.com/beamxsolutions" style="display: inline-block; text-decoration: none;">
+                                                    <img src="https://beamxsolutions.com/twitter-img.png" alt="Twitter" width="24" height="24" style="display: block;">
+                                                </a>
+                                            </td>
+                                            <!-- LinkedIn -->
+                                            <td style="padding: 0 12px;">
+                                                <a href="https://linkedin.com/company/beamxsolutions" style="display: inline-block; text-decoration: none;">
+                                                    <img src="https://beamxsolutions.com/linkedin-img.png" alt="LinkedIn" width="24" height="24" style="display: block;">
+                                                </a>
+                                            </td>
+                                        </tr>
+                                    </table>
+
+                                    <p style="color: #ffffff; font-size: 14px; margin: 0 0 32px 0;">
+                                        <a href="https://beamxsolutions.com" style="color: #ffffff; text-decoration: none;">www.beamxsolutions.com</a>
+                                    </p>
+
+                                    <p style="color: #ffffff; font-size: 14px; line-height: 20px; margin: 0 0 32px 0;">
+                                        This email was generated from your advanced business assessment <br>at
+                                        <a href="https://beamxsolutions.com/tools/advanced-business-assessment" style="color: #ffffff; text-decoration: underline;">beamxsolutions.com/tools/advanced-business-assessment</a>
+                                    </p>
+
+                                    <p style="color: #008bd8; font-size: 14px; margin: 0;">
+                                        Copyright © 2025 BeamXSolutions
+                                    </p>
+                                </td>
+                            </tr>
+
+                        </table>
+                    </td>
+                </tr>
+            </table>
         </body>
         </html>
         """
-        
+
         # Plain text version
         text_content = f"""
         Your Advanced Business Assessment Results - BeamX Solutions
 
-        Hello {form_data.full_name or 'Valued Customer'},
+        Hello {form_data.full_name or ''}!
 
         Thank you for completing the BeamX Solutions Advanced Business Assessment. Your results are ready!
 
@@ -558,20 +703,29 @@ def send_email_with_resend(recipient_email: str, result: Dict, form_data: Advanc
         Your detailed assessment report is attached as a PDF with personalized recommendations.
 
         What's Next?
-        Ready to address your primary challenge of "{form_data.primary_challenge.lower()}" and achieve your goal of "{form_data.main_goal.lower()}"? Our team specializes in helping {form_data.business_type.lower()} businesses achieve sustainable growth.
+        Ready to transform these insights into growth? Our team specializes in helping {form_data.business_type.lower()} businesses overcome challenges like "{form_data.primary_challenge.lower()}" and achieve your goal of "{form_data.main_goal.lower()}" with sustainable growth.
+
+        Schedule Your Free Consultation: https://calendly.com/beamxsolutions
 
         Contact Us:
         Website: https://beamxsolutions.com
         Email: info@beamxsolutions.com
-        Schedule a consultation: https://calendly.com/beamxsolutions
+
+        Follow Us:
+        Facebook: https://facebook.com/beamxsolutions
+        Instagram: https://instagram.com/beamxsolutions
+        Twitter/X: https://twitter.com/beamxsolutions
+        LinkedIn: https://linkedin.com/company/beamxsolutions
 
         Best regards,
         The BeamX Solutions Team
 
         ---
-        This email was generated from your advanced business assessment at https://beamxsolutions.com/advanced-business-assessment
+        This email was generated from your advanced business assessment at https://beamxsolutions.com/tools/advanced-business-assessment
+
+        Copyright © 2025 BeamXSolutions
         """
-        
+
         # Send email using Resend
         params = {
             "from": f"BeamX Solutions <{from_email}>",
@@ -586,11 +740,12 @@ def send_email_with_resend(recipient_email: str, result: Dict, form_data: Advanc
                 }
             ]
         }
-        
+
         email_response = resend.Emails.send(params)
+
         logger.info(f"Email sent successfully via Resend to {recipient_email}, ID: {email_response.get('id', 'unknown')}")
         return True
-        
+
     except Exception as e:
         logger.error(f"Failed to send email via Resend to {recipient_email}: {str(e)}")
         return False
