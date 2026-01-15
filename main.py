@@ -968,6 +968,24 @@ async def assess_business(data: AdvancedScorecardInput):
     """Run business assessment based on input data"""
     try:
         result = run_Advanced_assessment(data)
+        
+        # ✨ NEW: Automatically send email with results
+        try:
+            email_sent = send_email_with_resend(
+                data.email,
+                result,
+                data
+            )
+            if email_sent:
+                logger.info(f"Advanced assessment results automatically sent to {data.email}")
+                result["email_sent"] = True
+            else:
+                logger.warning(f"Failed to automatically send email to {data.email}")
+                result["email_sent"] = False
+        except Exception as email_error:
+            logger.error(f"Error sending automatic email to {data.email}: {email_error}")
+            result["email_sent"] = False
+        
         return result
     except HTTPException as e:
         raise e
