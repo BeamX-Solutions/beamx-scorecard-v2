@@ -1,1057 +1,721 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, EmailStr
-from typing import Literal, Dict, Any, Optional
-from anthropic import Anthropic, AnthropicError
-from supabase import create_client, Client
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, EmailStr, Field
+from typing import Dict, List, Literal
+from dataclasses import dataclass
+import datetime
 import os
-from datetime import datetime
-import json
-import io
 import base64
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
-from reportlab.lib.units import inch
-import resend
+import io
+import re
 import logging
+from weasyprint import HTML
+from weasyprint.text.fonts import FontConfiguration
+from supabase import create_client, Client
+from openai import AsyncOpenAI
+import resend
 
-# Configure logging
+# ─────────────────────────────────────────────
+# SETUP
+# ─────────────────────────────────────────────
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Advanced Business Assessment API", version="1.0.0")
+app = FastAPI(title="Beacon Pro SME Assessment API", version="1.0.0")
 
-# CORS configuration
-origins = [
-    "https://beamxsolutions.com",
-    "http://localhost:3000",  # For local development
-]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["https://beamxsolutions.com", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize Supabase client
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_ANON_KEY")
-if not supabase_url or not supabase_key:
-    raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set")
-try:
-    supabase: Client = create_client(supabase_url, supabase_key)
-    logger.info("Supabase client initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize Supabase client: {e}")
-    raise ValueError(f"Failed to initialize Supabase client: {e}")
-
-# Initialize Anthropic client
-anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-if not anthropic_api_key:
-    raise ValueError("ANTHROPIC_API_KEY environment variable not set")
-try:
-    anthropic_client = Anthropic(api_key=anthropic_api_key)
-    logger.info("Anthropic client initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize Anthropic client: {e}")
-    raise ValueError(f"Failed to initialize Anthropic client: {e}")
-
-# Initialize Resend client
+supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY"))
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 resend_api_key = os.getenv("RESEND_API_KEY")
 from_email = os.getenv("FROM_EMAIL", "noreply@beamxsolutions.com")
-if not resend_api_key:
-    logger.warning("Resend API key not configured. Email functionality will be disabled.")
-else:
+if resend_api_key:
     resend.api_key = resend_api_key
-    logger.info("Resend client initialized successfully")
 
-# --- Advanced Business Assessment Input Schema ---
-class AdvancedScorecardInput(BaseModel):
-    full_name: Optional[str] = None
-    company_name: Optional[str] = None
-    email: Optional[EmailStr] = None
-    revenue: Literal["Under $10K", "$10K–$50K", "$50K–$250K", "$250K–$1M", "$1M–$5M", "Over $5M"]
-    revenue_trend: Literal["Declining", "Flat", "Growing slowly (<10%)", "Growing moderately (10-25%)", "Growing rapidly (>25%)"]
-    profit_margin_known: Literal["Yes, I track it closely", "Roughly know it", "No idea"]
-    profit_margin: Literal["N/A", "Breaking even/Loss", "1-10%", "10-20%", "20-30%", "30%+"]
-    cash_flow: Literal["Negative (spending savings)", "Break-even", "Positive but tight", "Healthy buffer", "Strong reserves"]
-    financial_planning: Literal["No formal planning", "Basic budgeting", "Monthly financial reviews", "Detailed forecasting"]
-    customer_acquisition: Literal["Word of mouth only", "Some marketing efforts", "Consistent marketing", "Multi-channel strategy"]
-    customer_cost_awareness: Literal["No idea", "Rough estimate", "Track precisely"]
-    customer_retention: Literal["Don't track", "High turnover", "Average retention", "Strong retention", "Excellent loyalty"]
-    repeat_business: Literal["Rarely", "Occasionally", "Frequently", "Majority of revenue"]
-    marketing_budget: Literal["No budget", "Under 5% of revenue", "5-10% of revenue", "Over 10% of revenue"]
-    online_presence: Literal["No website/social", "Basic website", "Active online presence", "Strong digital brand"]
-    customer_feedback: Literal["Don't collect", "Informal feedback", "Surveys/reviews", "Systematic feedback loops"]
-    record_keeping: Literal["Paper/scattered files", "Basic digital files", "Accounting software", "Integrated business software"]
-    inventory_management: Literal["N/A", "Manual tracking", "Basic systems", "Automated systems"]
-    scheduling_systems: Literal["Paper calendar", "Basic digital calendar", "Scheduling software", "Integrated workflow"]
-    quality_control: Literal["No formal process", "Basic checks", "Standard procedures", "Systematic quality management"]
-    supplier_relationships: Literal["N/A", "Transactional only", "Good relationships", "Strategic partnerships"]
-    team_size: Literal["Solo operation", "2-5 people", "6-15 people", "16-50 people", "50+ people"]
-    hiring_process: Literal["N/A", "Informal hiring", "Basic process", "Structured interviews", "Comprehensive system"]
-    employee_training: Literal["N/A", "On-the-job learning", "Basic training", "Formal programs"]
-    delegation: Literal["Do everything myself", "Delegate basic tasks", "Delegate important work", "Team runs independently"]
-    performance_tracking: Literal["No tracking", "Informal feedback", "Regular check-ins", "Formal performance reviews"]
-    payment_systems: Literal["Cash/check only", "Basic card processing", "Multiple payment options", "Advanced payment tech"]
-    data_backup: Literal["No system", "Manual backups", "Cloud storage", "Automated backup systems"]
-    communication_tools: Literal["Phone/email only", "Basic messaging", "Team communication apps", "Integrated communication"]
-    website_functionality: Literal["No website", "Basic info site", "Interactive features", "E-commerce/booking enabled"]
-    social_media_use: Literal["No presence", "Occasional posts", "Regular updates", "Strategic content marketing"]
-    market_knowledge: Literal["Limited knowledge", "Basic awareness", "Good understanding", "Deep market insights"]
-    competitive_advantage: Literal["Not sure", "Price/cost", "Quality/service", "Unique offering", "Market position"]
-    customer_segments: Literal["Serve everyone", "1-2 main types", "Well-defined segments", "Specialized niches"]
-    pricing_strategy: Literal["Match competitors", "Cost-plus margin", "Value-based pricing", "Dynamic/strategic pricing"]
-    growth_planning: Literal["No plans", "Vague goals", "Basic plan", "Detailed strategy"]
-    business_type: Literal[
-        "Retail/E-commerce", "Service Business", "Restaurant/Food", "Healthcare/Medical",
-        "Construction/Trades", "Professional Services", "Manufacturing",
-        "Technology/Software", "Consulting", "Other"
+
+# ─────────────────────────────────────────────
+# INPUT SCHEMA (identical to Beacon)
+# ─────────────────────────────────────────────
+
+class BeaconProInput(BaseModel):
+    fullName: str = Field(min_length=1, max_length=100)
+    email: EmailStr
+    businessName: str = Field(min_length=1, max_length=150)
+    industry: Literal[
+        "Retail/Trade", "Food & Beverage", "Professional Services",
+        "Beauty & Personal Care", "Logistics & Transportation",
+        "Manufacturing/Production", "Hospitality", "Construction/Trades",
+        "Healthcare Services", "Education/Training", "Agriculture", "Other"
     ]
-    business_age: Literal["Less than 1 year", "1-3 years", "3-10 years", "10+ years"]
-    primary_challenge: Literal[
-        "Not enough customers", "Too busy to grow systematically", "Inconsistent revenue",
-        "Managing costs/expenses", "Finding good employees",
-        "Competition/pricing pressure", "Keeping up with technology", "Time management/work-life balance"
+    yearsInBusiness: Literal[
+        "Less than 1 year", "1-3 years", "3-5 years", "5-10 years", "10+ years"
     ]
-    main_goal: Literal[
-        "Increase revenue/sales", "Improve profitability", "Scale the business",
-        "Reduce time commitment", "Build systems/processes", "Expand to new markets",
-        "Improve quality/service", "Prepare for succession/sale"
+    cashFlow: Literal[
+        "Consistent surplus", "Breaking even",
+        "Unpredictable (some surplus, some deficit)",
+        "Burning cash consistently", "Don't know"
     ]
-    location_importance: Literal["Fully location-dependent", "Mostly local", "Regional reach", "National/global"]
+    profitMargin: Literal[
+        "30%+", "20-30%", "10-20%", "5-10%",
+        "Less than 5% or negative", "Don't know"
+    ]
+    cashRunway: Literal[
+        "6+ months", "3-6 months", "1-3 months",
+        "Less than 1 month", "Would close immediately"
+    ]
+    paymentSpeed: Literal[
+        "Same day (cash/instant)", "1-7 days", "8-30 days", "31-60 days", "60+ days"
+    ]
+    repeatCustomerRate: Literal[
+        "70%+ repeat customers", "50-70% repeat", "30-50% repeat",
+        "10-30% repeat", "Less than 10% repeat"
+    ]
+    acquisitionChannel: Literal[
+        "Referrals/word-of-mouth", "Walk-ins/location visibility",
+        "Organic social media", "Repeat business relationships",
+        "Paid advertising", "Cold outreach", "Don't know"
+    ]
+    pricingPower: Literal[
+        "Tested increases successfully", "Most customers would stay",
+        "Some would leave but still profitable", "Would lose most customers", "Don't know"
+    ]
+    founderDependency: Literal[
+        "Runs 2+ weeks without me", "Can step away 1 week",
+        "2-3 days max", "Can't miss even 1 day", "Must be there daily"
+    ]
+    processDocumentation: Literal[
+        "Comprehensive written processes", "Some key processes documented",
+        "Trained others, mostly in my head", "Everything in my head only", "No consistent processes"
+    ]
+    inventoryTracking: Literal[
+        "Digital real-time system", "Regular manual/spreadsheet",
+        "Weekly physical count", "Only when running low",
+        "Don't track", "Not applicable (service business)"
+    ]
+    expenseAwareness: Literal[
+        "Know exact amounts and percentages", "Know roughly",
+        "General idea", "Would have to look up", "No idea"
+    ]
+    profitPerProduct: Literal[
+        "Know margins on each offering", "Good sense of what's profitable",
+        "Know revenue only, not profit", "Haven't analyzed", "All seem about the same"
+    ]
+    pricingStrategy: Literal[
+        "Cost + margin + market research", "Match competitors",
+        "Cost + markup (no market analysis)", "What feels right", "No strategy"
+    ]
+    businessTrajectory: Literal[
+        "Growing 20%+", "Growing 5-20%", "Stable (±5%)",
+        "Declining 5-20%", "Declining 20%+", "Less than 1 year old"
+    ]
+    revenueDiversification: Literal[
+        "4+ streams/customer types", "2-3 streams", "Primary + side income",
+        "Single product/customer type", "Dependent on 1-2 major customers"
+    ]
+    digitalPayments: Literal[
+        "80%+ digital", "50-80% digital", "20-50% digital", "Less than 20% digital"
+    ]
+    formalRegistration: Literal[
+        "Fully registered and tax compliant", "Registered, behind on taxes",
+        "In process of registering", "Not registered"
+    ]
+    infrastructure: Literal[
+        "Consistent power/internet/supply", "Mostly reliable with backups",
+        "Frequent disruptions", "Major challenges daily"
+    ]
+    bankingRelationship: Literal[
+        "Strong, accessed loans/credit", "Accounts but no credit",
+        "Minimal interaction", "No bank relationship"
+    ]
+    primaryPainPoint: Literal[
+        "Getting more customers/sales", "Managing cash flow/getting paid",
+        "Hiring or managing staff", "Keeping costs under control",
+        "Too busy/overwhelmed", "Inconsistent quality/delivery",
+        "Don't know where to focus", "Competition/market changes",
+        "Actually doing well, want to optimize"
+    ]
 
-# Pydantic model for email request
-class EmailRequest(BaseModel):
-    email: EmailStr = Field(..., description="Recipient email address")
-    result: Dict = Field(..., description="Assessment results")
-    formData: AdvancedScorecardInput = Field(..., description="Original form data")
 
-# --- Complete Scoring Configuration ---
-SCORING_CONFIG: Dict[str, Dict[str, Any]] = {
-    'financial': {
-        'fields': {
-            'revenue': {
-                'map': {"Under $10K": 1, "$10K–$50K": 2, "$50K–$250K": 3, "$250K–$1M": 4, "$1M–$5M": 5, "Over $5M": 6},
-                'weight': 1.0
-            },
-            'revenue_trend': {
-                'map': {"Declining": 1, "Flat": 2, "Growing slowly (<10%)": 3, "Growing moderately (10-25%)": 4, "Growing rapidly (>25%)": 5},
-                'weight': 1.5
-            },
-            'profit_margin_known': {
-                'map': {"No idea": 0, "Roughly know it": 1, "Yes, I track it closely": 2},
-                'weight': 1.0
-            },
-            'profit_margin': {
-                'map': {"N/A": 0, "Breaking even/Loss": 1, "1-10%": 2, "10-20%": 3, "20-30%": 4, "30%+": 5},
-                'weight': 1.0
-            },
-            'cash_flow': {
-                'map': {"Negative (spending savings)": 1, "Break-even": 2, "Positive but tight": 3, "Healthy buffer": 4, "Strong reserves": 5},
-                'weight': 1.0
-            },
-            'financial_planning': {
-                'map': {"No formal planning": 1, "Basic budgeting": 2, "Monthly financial reviews": 4, "Detailed forecasting": 5},
-                'weight': 1.2
-            }
-        }
-    },
-    'growth': {
-        'fields': {
-            'customer_acquisition': {
-                'map': {"Word of mouth only": 1, "Some marketing efforts": 2, "Consistent marketing": 4, "Multi-channel strategy": 5},
-                'weight': 1.0
-            },
-            'customer_cost_awareness': {
-                'map': {"No idea": 0, "Rough estimate": 2, "Track precisely": 4},
-                'weight': 1.0
-            },
-            'customer_retention': {
-                'map': {"Don't track": 0, "High turnover": 1, "Average retention": 3, "Strong retention": 4, "Excellent loyalty": 5},
-                'weight': 1.3
-            },
-            'repeat_business': {
-                'map': {"Rarely": 1, "Occasionally": 2, "Frequently": 4, "Majority of revenue": 5},
-                'weight': 1.2
-            },
-            'marketing_budget': {
-                'map': {"No budget": 1, "Under 5% of revenue": 2, "5-10% of revenue": 4, "Over 10% of revenue": 5},
-                'weight': 1.0
-            },
-            'online_presence': {
-                'map': {"No website/social": 1, "Basic website": 2, "Active online presence": 4, "Strong digital brand": 5},
-                'weight': 1.1
-            },
-            'customer_feedback': {
-                'map': {"Don't collect": 1, "Informal feedback": 2, "Surveys/reviews": 4, "Systematic feedback loops": 5},
-                'weight': 1.0
-            }
-        }
-    },
-    'operations': {
-        'fields': {
-            'record_keeping': {
-                'map': {"Paper/scattered files": 1, "Basic digital files": 2, "Accounting software": 4, "Integrated business software": 5},
-                'weight': 1.3
-            },
-            'inventory_management': {
-                'map': {"N/A": 3, "Manual tracking": 1, "Basic systems": 3, "Automated systems": 5},
-                'weight': 1.0
-            },
-            'scheduling_systems': {
-                'map': {"Paper calendar": 1, "Basic digital calendar": 2, "Scheduling software": 4, "Integrated workflow": 5},
-                'weight': 1.0
-            },
-            'quality_control': {
-                'map': {"No formal process": 1, "Basic checks": 2, "Standard procedures": 4, "Systematic quality management": 5},
-                'weight': 1.2
-            },
-            'supplier_relationships': {
-                'map': {"N/A": 3, "Transactional only": 2, "Good relationships": 4, "Strategic partnerships": 5},
-                'weight': 1.0
-            }
-        }
-    },
-    'team': {
-        'fields': {
-            'team_size': {
-                'map': {"Solo operation": 2, "2-5 people": 3, "6-15 people": 4, "16-50 people": 5, "50+ people": 6},
-                'weight': 1.0
-            },
-            'hiring_process': {
-                'map': {"N/A": 0, "Informal hiring": 2, "Basic process": 3, "Structured interviews": 4, "Comprehensive system": 5},
-                'weight': 1.0
-            },
-            'employee_training': {
-                'map': {"N/A": 0, "On-the-job learning": 2, "Basic training": 3, "Formal programs": 5},
-                'weight': 1.1
-            },
-            'delegation': {
-                'map': {"Do everything myself": 1, "Delegate basic tasks": 2, "Delegate important work": 4, "Team runs independently": 5},
-                'weight': 1.4
-            },
-            'performance_tracking': {
-                'map': {"No tracking": 1, "Informal feedback": 2, "Regular check-ins": 4, "Formal performance reviews": 5},
-                'weight': 1.0
-            }
-        }
-    },
-    'digital': {
-        'fields': {
-            'payment_systems': {
-                'map': {"Cash/check only": 1, "Basic card processing": 2, "Multiple payment options": 4, "Advanced payment tech": 5},
-                'weight': 1.0
-            },
-            'data_backup': {
-                'map': {"No system": 1, "Manual backups": 2, "Cloud storage": 4, "Automated backup systems": 5},
-                'weight': 1.2
-            },
-            'communication_tools': {
-                'map': {"Phone/email only": 1, "Basic messaging": 2, "Team communication apps": 4, "Integrated communication": 5},
-                'weight': 1.0
-            },
-            'website_functionality': {
-                'map': {"No website": 1, "Basic info site": 2, "Interactive features": 4, "E-commerce/booking enabled": 5},
-                'weight': 1.3
-            },
-            'social_media_use': {
-                'map': {"No presence": 1, "Occasional posts": 2, "Regular updates": 4, "Strategic content marketing": 5},
-                'weight': 1.0
-            }
-        }
-    },
-    'strategic': {
-        'fields': {
-            'market_knowledge': {
-                'map': {"Limited knowledge": 1, "Basic awareness": 2, "Good understanding": 4, "Deep market insights": 5},
-                'weight': 1.3
-            },
-            'competitive_advantage': {
-                'map': {"Not sure": 1, "Price/cost": 2, "Quality/service": 4, "Unique offering": 5, "Market position": 5},
-                'weight': 1.2
-            },
-            'customer_segments': {
-                'map': {"Serve everyone": 1, "1-2 main types": 3, "Well-defined segments": 4, "Specialized niches": 5},
-                'weight': 1.1
-            },
-            'pricing_strategy': {
-                'map': {"Match competitors": 2, "Cost-plus margin": 3, "Value-based pricing": 4, "Dynamic/strategic pricing": 5},
-                'weight': 1.0
-            },
-            'growth_planning': {
-                'map': {"No plans": 1, "Vague goals": 2, "Basic plan": 4, "Detailed strategy": 5},
-                'weight': 1.4
-            }
-        }
-    }
-}
+# ─────────────────────────────────────────────
+# SCORING MAPS (identical to Beacon)
+# ─────────────────────────────────────────────
 
-# Calculate max scores for each pillar
-def _calculate_max_raw_score(pillar: str) -> float:
-    """Calculate the maximum possible raw score for a pillar"""
-    config = SCORING_CONFIG[pillar]
-    max_score = 0.0
-    for field_name, field_config in config['fields'].items():
-        max_value = max(field_config['map'].values())
-        max_score += max_value * field_config['weight']
-    return max_score
+CASH_FLOW_MAP = {"Consistent surplus": 5, "Breaking even": 3, "Unpredictable (some surplus, some deficit)": 2, "Burning cash consistently": 0, "Don't know": 0}
+PROFIT_MARGIN_MAP = {"30%+": 5, "20-30%": 4, "10-20%": 3, "5-10%": 2, "Less than 5% or negative": 1, "Don't know": 0}
+CASH_RUNWAY_MAP = {"6+ months": 5, "3-6 months": 4, "1-3 months": 2, "Less than 1 month": 1, "Would close immediately": 0}
+PAYMENT_SPEED_MAP = {"Same day (cash/instant)": 5, "1-7 days": 4, "8-30 days": 3, "31-60 days": 1, "60+ days": 0}
+REPEAT_RATE_MAP = {"70%+ repeat customers": 5, "50-70% repeat": 4, "30-50% repeat": 3, "10-30% repeat": 2, "Less than 10% repeat": 0}
+ACQUISITION_MAP = {"Referrals/word-of-mouth": 5, "Repeat business relationships": 5, "Walk-ins/location visibility": 3, "Organic social media": 3, "Paid advertising": 2, "Cold outreach": 1, "Don't know": 0}
+PRICING_POWER_MAP = {"Tested increases successfully": 5, "Most customers would stay": 4, "Some would leave but still profitable": 3, "Would lose most customers": 1, "Don't know": 1}
+FOUNDER_DEPENDENCY_MAP = {"Runs 2+ weeks without me": 5, "Can step away 1 week": 4, "2-3 days max": 3, "Can't miss even 1 day": 1, "Must be there daily": 0}
+PROCESS_DOC_MAP = {"Comprehensive written processes": 5, "Some key processes documented": 4, "Trained others, mostly in my head": 2, "Everything in my head only": 1, "No consistent processes": 0}
+INVENTORY_MAP = {"Digital real-time system": 5, "Regular manual/spreadsheet": 4, "Weekly physical count": 3, "Only when running low": 1, "Don't track": 0, "Not applicable (service business)": 4}
+EXPENSE_AWARENESS_MAP = {"Know exact amounts and percentages": 5, "Know roughly": 4, "General idea": 3, "Would have to look up": 1, "No idea": 0}
+PROFIT_PER_PRODUCT_MAP = {"Know margins on each offering": 5, "Good sense of what's profitable": 4, "Know revenue only, not profit": 2, "Haven't analyzed": 1, "All seem about the same": 1}
+PRICING_STRATEGY_MAP = {"Cost + margin + market research": 5, "Match competitors": 3, "Cost + markup (no market analysis)": 2, "What feels right": 1, "No strategy": 0}
+TRAJECTORY_MAP = {"Growing 20%+": 5, "Growing 5-20%": 4, "Stable (±5%)": 3, "Declining 5-20%": 1, "Declining 20%+": 0, "Less than 1 year old": 2}
+DIVERSIFICATION_MAP = {"4+ streams/customer types": 5, "2-3 streams": 4, "Primary + side income": 3, "Single product/customer type": 2, "Dependent on 1-2 major customers": 0}
+DIGITAL_PAYMENTS_MAP = {"80%+ digital": 5, "50-80% digital": 4, "20-50% digital": 2, "Less than 20% digital": 1}
+FORMALIZATION_MAP = {"Fully registered and tax compliant": 5, "Registered, behind on taxes": 3, "In process of registering": 2, "Not registered": 0}
+INFRASTRUCTURE_MAP = {"Consistent power/internet/supply": 5, "Mostly reliable with backups": 4, "Frequent disruptions": 2, "Major challenges daily": 0}
+BANKING_MAP = {"Strong, accessed loans/credit": 5, "Accounts but no credit": 3, "Minimal interaction": 1, "No bank relationship": 0}
 
-# Pre-calculate max scores
-for pillar in SCORING_CONFIG:
-    SCORING_CONFIG[pillar]['max_raw'] = _calculate_max_raw_score(pillar)
 
-# --- Scoring Functions ---
-def _score_pillar(data: AdvancedScorecardInput, pillar: str) -> int:
-    """Generic pillar scorer using configuration"""
-    config = SCORING_CONFIG[pillar]
-    raw_score = 0.0
+# ─────────────────────────────────────────────
+# DATA CLASSES
+# ─────────────────────────────────────────────
 
-    for field_name, field_config in config['fields'].items():
-        field_value = getattr(data, field_name)
-        field_score = field_config['map'][field_value]
-        weighted_score = field_score * field_config['weight']
-        raw_score += weighted_score
+@dataclass
+class CategoryScore:
+    name: str
+    score: float
+    max_score: float
+    percentage: float
+    grade: str
 
-    normalized_score = (raw_score / config['max_raw']) * 25
-    return min(round(normalized_score), 25)
+@dataclass
+class BeaconProScore:
+    total_score: float
+    readiness_level: str
+    financial_health: CategoryScore
+    customer_strength: CategoryScore
+    operational_maturity: CategoryScore
+    financial_intelligence: CategoryScore
+    growth_resilience: CategoryScore
+    primary_pain_point: str
+    industry: str
+    years_in_business: str
+    critical_flags: List[str]
+    opportunity_flags: List[str]
 
-def score_financial(data: AdvancedScorecardInput) -> int:
-    return _score_pillar(data, 'financial')
 
-def score_growth(data: AdvancedScorecardInput) -> int:
-    return _score_pillar(data, 'growth')
+# ─────────────────────────────────────────────
+# SCORING ENGINE
+# ─────────────────────────────────────────────
 
-def score_operations(data: AdvancedScorecardInput) -> int:
-    return _score_pillar(data, 'operations')
+def calculate_score(data: BeaconProInput) -> BeaconProScore:
+    def get_grade(pct: float) -> str:
+        if pct >= 90: return "A"
+        elif pct >= 80: return "B+"
+        elif pct >= 70: return "B"
+        elif pct >= 60: return "C+"
+        elif pct >= 50: return "C"
+        else: return "D"
 
-def score_team(data: AdvancedScorecardInput) -> int:
-    if data.team_size == "Solo operation":
-        delegation_config = SCORING_CONFIG['team']['fields']['delegation']
-        delegation_score = delegation_config['map'][data.delegation]
-        base_solo_score = 3.0
-        total_score = (delegation_score * delegation_config['weight']) + base_solo_score
-        max_solo_score = (5 * delegation_config['weight']) + base_solo_score
-        normalized_score = (total_score / max_solo_score) * 25
-        return min(round(normalized_score), 25)
-    return _score_pillar(data, 'team')
+    fh_raw = CASH_FLOW_MAP[data.cashFlow] + PROFIT_MARGIN_MAP[data.profitMargin] + CASH_RUNWAY_MAP[data.cashRunway] + PAYMENT_SPEED_MAP[data.paymentSpeed]
+    fh_score = (fh_raw / 20) * 20
 
-def score_digital(data: AdvancedScorecardInput) -> int:
-    return _score_pillar(data, 'digital')
+    cs_raw = REPEAT_RATE_MAP[data.repeatCustomerRate] + ACQUISITION_MAP[data.acquisitionChannel] + PRICING_POWER_MAP[data.pricingPower]
+    cs_score = (cs_raw / 15) * 20
 
-def score_strategic(data: AdvancedScorecardInput) -> int:
-    return _score_pillar(data, 'strategic')
+    om_raw = FOUNDER_DEPENDENCY_MAP[data.founderDependency] + PROCESS_DOC_MAP[data.processDocumentation] + INVENTORY_MAP[data.inventoryTracking]
+    om_score = (om_raw / 15) * 20
 
-# --- PDF Report Generation ---
-def generate_pdf_report(result: Dict, form_data: AdvancedScorecardInput) -> io.BytesIO:
-    """Generate a PDF report of the advanced business assessment results"""
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=1*inch)
-    styles = getSampleStyleSheet()
-    story = []
+    fi_raw = EXPENSE_AWARENESS_MAP[data.expenseAwareness] + PROFIT_PER_PRODUCT_MAP[data.profitPerProduct] + PRICING_STRATEGY_MAP[data.pricingStrategy]
+    fi_score = (fi_raw / 15) * 20
 
-    # Custom styles
-    title_style = ParagraphStyle(
-        'CustomTitle',
-        parent=styles['Heading1'],
-        fontSize=24,
-        spaceAfter=30,
-        textColor=colors.HexColor('#1f2937'),
-        alignment=1
+    gr_base = TRAJECTORY_MAP[data.businessTrajectory] + DIVERSIFICATION_MAP[data.revenueDiversification]
+    gr_base_score = (gr_base / 10) * 12
+    context_raw = (
+        (DIGITAL_PAYMENTS_MAP[data.digitalPayments] / 5 * 2) +
+        (FORMALIZATION_MAP[data.formalRegistration] / 5 * 3) +
+        (INFRASTRUCTURE_MAP[data.infrastructure] / 5 * 2) +
+        (BANKING_MAP[data.bankingRelationship] / 5 * 1)
     )
-    
-    heading_style = ParagraphStyle(
-        'CustomHeading',
-        parent=styles['Heading2'],
-        fontSize=16,
-        spaceAfter=12,
-        textColor=colors.HexColor('#374151')
+    gr_score = gr_base_score + context_raw
+    total = fh_score + cs_score + om_score + fi_score + gr_score
+
+    if total >= 85:   level = "🏆 Scale-Ready"
+    elif total >= 70: level = "💪 Stable Foundation"
+    elif total >= 50: level = "🔨 Building Blocks"
+    elif total >= 30: level = "⚠️ Survival Mode"
+    else:             level = "🚨 Red Alert"
+
+    critical_flags = []
+    if data.cashFlow in ["Burning cash consistently", "Don't know"]: critical_flags.append("CASH_CRISIS")
+    if data.cashRunway in ["Less than 1 month", "Would close immediately"]: critical_flags.append("RUNWAY_CRITICAL")
+    if data.profitMargin in ["Less than 5% or negative", "Don't know"]: critical_flags.append("NO_PROFIT_VISIBILITY")
+    if data.founderDependency == "Must be there daily": critical_flags.append("FOUNDER_BURNOUT_RISK")
+    if data.formalRegistration == "Not registered": critical_flags.append("INFORMAL_OPERATIONS")
+    if data.repeatCustomerRate == "Less than 10% repeat": critical_flags.append("NO_CUSTOMER_LOYALTY")
+
+    opportunity_flags = []
+    if data.pricingPower in ["Tested increases successfully", "Most customers would stay"]: opportunity_flags.append("PRICING_POWER")
+    if data.repeatCustomerRate == "70%+ repeat customers": opportunity_flags.append("STRONG_RETENTION")
+    if data.acquisitionChannel in ["Referrals/word-of-mouth", "Repeat business relationships"]: opportunity_flags.append("ORGANIC_GROWTH")
+    if data.processDocumentation == "Comprehensive written processes": opportunity_flags.append("SYSTEMS_READY")
+    if fh_score >= 16: opportunity_flags.append("FINANCIAL_DISCIPLINE")
+
+    def make_cat(name, score, max_s):
+        pct = round((score / max_s) * 100, 1)
+        return CategoryScore(name=name, score=round(score, 1), max_score=max_s, percentage=pct, grade=get_grade(pct))
+
+    return BeaconProScore(
+        total_score=round(total, 1),
+        readiness_level=level,
+        financial_health=make_cat("Financial Health", fh_score, 20),
+        customer_strength=make_cat("Customer Strength", cs_score, 20),
+        operational_maturity=make_cat("Operational Maturity", om_score, 20),
+        financial_intelligence=make_cat("Financial Intelligence", fi_score, 20),
+        growth_resilience=make_cat("Growth & Resilience", gr_score, 20),
+        primary_pain_point=data.primaryPainPoint,
+        industry=data.industry,
+        years_in_business=data.yearsInBusiness,
+        critical_flags=critical_flags,
+        opportunity_flags=opportunity_flags,
     )
 
-    # Title and header
-    story.append(Paragraph("Advanced Business Assessment Report", title_style))
-    story.append(Paragraph("BeamX Solutions", styles['Normal']))
-    story.append(Paragraph(f"Generated on {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
-    story.append(Spacer(1, 20))
 
-    # Business Profile
-    story.append(Paragraph("Business Profile", heading_style))
-    story.append(Paragraph(f"<b>Company Name:</b> {form_data.company_name or 'Not provided'}", styles['Normal']))
-    story.append(Paragraph(f"<b>Contact:</b> {form_data.full_name or 'Not provided'}", styles['Normal']))
-    story.append(Paragraph(f"<b>Business Type:</b> {form_data.business_type}", styles['Normal']))
-    story.append(Paragraph(f"<b>Business Age:</b> {form_data.business_age}", styles['Normal']))
-    story.append(Paragraph(f"<b>Primary Challenge:</b> {form_data.primary_challenge}", styles['Normal']))
-    story.append(Paragraph(f"<b>Main Goal:</b> {form_data.main_goal}", styles['Normal']))
-    story.append(Spacer(1, 20))
+# ─────────────────────────────────────────────
+# LLM PROMPTS
+# ─────────────────────────────────────────────
 
-    # Overall Score
-    story.append(Paragraph("Overall Assessment", heading_style))
-    story.append(Paragraph(f"<b>Total Score:</b> {result['total_score']}/150", styles['Normal']))
-    story.append(Spacer(1, 20))
+def _build_pro_system_prompt() -> str:
+    return """You are a senior business advisor at BeamX Solutions — sharp, direct, and deeply experienced with SMEs in emerging markets, particularly Nigeria and West Africa.
 
-    # Score Breakdown Table
-    story.append(Paragraph("Detailed Score Breakdown", heading_style))
-    breakdown_data = [
-        ['Category', 'Your Score', 'Max Score', 'Percentage'],
-        ['Financial Health', f"{result['scores']['financial']}", '25', f"{(result['scores']['financial']/25)*100:.0f}%"],
-        ['Growth & Marketing', f"{result['scores']['growth']}", '25', f"{(result['scores']['growth']/25)*100:.0f}%"],
-        ['Operations & Systems', f"{result['scores']['operations']}", '25', f"{(result['scores']['operations']/25)*100:.0f}%"],
-        ['Team & Management', f"{result['scores']['team']}", '25', f"{(result['scores']['team']/25)*100:.0f}%"],
-        ['Digital Adoption', f"{result['scores']['digital']}", '25', f"{(result['scores']['digital']/25)*100:.0f}%"],
-        ['Strategic Position', f"{result['scores']['strategic']}", '25', f"{(result['scores']['strategic']/25)*100:.0f}%"],
-    ]
-    
-    breakdown_table = Table(breakdown_data, colWidths=[2.5*inch, 1*inch, 1*inch, 1*inch])
-    breakdown_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f3f4f6')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#1f2937')),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
-        ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e5e7eb'))
-    ]))
-    
-    story.append(breakdown_table)
-    story.append(Spacer(1, 30))
+You are writing a premium, personalised advisory report for a business owner who just completed a diagnostic assessment. This is NOT a template fill-in — you are writing from scratch, as a real advisor would after reviewing their data.
 
-    # Insights Section
-    story.append(Paragraph("Strategic Insights & Recommendations", heading_style))
-    insight_text = result.get('insight', '')
-    insight_paragraphs = insight_text.split('\n')
-    
-    for para in insight_paragraphs:
-        if para.strip():
-            if para.startswith('**') and para.endswith('**'):
-                clean_para = para.strip('*')
-                story.append(Paragraph(f"<b>{clean_para}</b>", styles['Normal']))
-            elif para.startswith('•'):
-                story.append(Paragraph(para, styles['Normal']))
+YOUR VOICE:
+- Talk directly to the owner by first name (use it 2-3 times per section, naturally)
+- Be honest, warm, and specific — no generic advice that could apply to anyone
+- Reference their actual answers, scores, and flags throughout
+- Sound like a trusted advisor who has studied their business, not an AI filling in blanks
+- Use Nigerian business context where relevant (naira, CAC, NEPA/power issues, etc.)
+
+REPORT STRUCTURE (follow exactly, use these markdown headers):
+## Executive Summary
+## 🚨 Critical Priorities (Next 30 Days)   ← only if critical_flags exist
+## Strategic Recommendations
+## Growth Opportunities   ← only if opportunity_flags exist
+## Your Next Steps
+
+SCORING RULES (never change these):
+- Total score: as provided — never modify
+- Category scores and grades: as provided — never modify
+- Critical flags: as provided — address each one specifically
+- Opportunity flags: as provided — leverage each one specifically
+
+ADVISORY QUALITY STANDARDS:
+- Every recommendation must be specific and actionable (not "improve your finances" but "call every customer with invoices >15 days outstanding this week")
+- For each critical flag, give a 30-day plan with Week 1 / Week 2-3 / Month 1 milestones
+- For the weakest 1-2 categories, give a concrete 90-day improvement plan
+- For the primary pain point, give a sequenced, prioritized tactical plan
+- Include industry-specific metrics and benchmarks where relevant
+- Close with a clear 30-day focus goal and BeamX CTA
+
+LENGTH: This is a premium report. Write 900-1200 words of substantive advisory content."""
+
+
+def _build_pro_user_prompt(data: BeaconProInput, score: BeaconProScore) -> str:
+    first_name = data.fullName.split()[0]
+    critical = ", ".join(score.critical_flags) if score.critical_flags else "None"
+    opportunities = ", ".join(score.opportunity_flags) if score.opportunity_flags else "None"
+
+    return f"""Write the Beacon Pro advisory report for this business owner.
+
+OWNER: {first_name} (full name: {data.fullName})
+BUSINESS: {data.businessName}
+INDUSTRY: {data.industry}
+YEARS IN BUSINESS: {data.yearsInBusiness}
+PRIMARY PAIN POINT: {data.primaryPainPoint}
+
+OVERALL SCORE: {score.total_score}/100
+READINESS LEVEL: {score.readiness_level}
+
+CATEGORY SCORES:
+- Financial Health: {score.financial_health.score}/20 ({score.financial_health.percentage}%) — Grade: {score.financial_health.grade}
+  Answers: Cash Flow={data.cashFlow} | Profit Margin={data.profitMargin} | Cash Runway={data.cashRunway} | Payment Speed={data.paymentSpeed}
+
+- Customer Strength: {score.customer_strength.score}/20 ({score.customer_strength.percentage}%) — Grade: {score.customer_strength.grade}
+  Answers: Repeat Rate={data.repeatCustomerRate} | Acquisition={data.acquisitionChannel} | Pricing Power={data.pricingPower}
+
+- Operational Maturity: {score.operational_maturity.score}/20 ({score.operational_maturity.percentage}%) — Grade: {score.operational_maturity.grade}
+  Answers: Founder Dependency={data.founderDependency} | Process Docs={data.processDocumentation} | Inventory={data.inventoryTracking}
+
+- Financial Intelligence: {score.financial_intelligence.score}/20 ({score.financial_intelligence.percentage}%) — Grade: {score.financial_intelligence.grade}
+  Answers: Expense Awareness={data.expenseAwareness} | Profit Per Product={data.profitPerProduct} | Pricing Strategy={data.pricingStrategy}
+
+- Growth & Resilience: {score.growth_resilience.score}/20 ({score.growth_resilience.percentage}%) — Grade: {score.growth_resilience.grade}
+  Answers: Trajectory={data.businessTrajectory} | Diversification={data.revenueDiversification} | Digital Payments={data.digitalPayments} | Registration={data.formalRegistration} | Infrastructure={data.infrastructure} | Banking={data.bankingRelationship}
+
+CRITICAL FLAGS: {critical}
+OPPORTUNITY FLAGS: {opportunities}
+
+Write the full advisory now. Address {first_name} directly. Quote their actual answers back to them. Make every recommendation concrete and actionable. Include {data.industry} industry context relevant to Nigeria/West Africa."""
+
+
+# ─────────────────────────────────────────────
+# STREAMING ENDPOINT
+# ─────────────────────────────────────────────
+
+@app.post("/generate-report-stream")
+async def generate_report_stream(input_data: BeaconProInput):
+    """
+    Two-phase SSE stream:
+    1. Emits a 'score' event immediately with the full scorecard JSON
+    2. Streams LLM advisory token by token as 'token' events
+    3. Emits 'done' event with complete advisory for PDF/email use
+    """
+    score = calculate_score(input_data)
+
+    async def event_generator():
+        import json
+
+        # Phase 1: emit scorecard immediately (renders while LLM writes)
+        score_payload = {
+            "type": "score",
+            "data": {
+                "total_score": score.total_score,
+                "readiness_level": score.readiness_level,
+                "breakdown": {
+                    "financial_health": {"score": score.financial_health.score, "max": 20, "grade": score.financial_health.grade, "percentage": score.financial_health.percentage},
+                    "customer_strength": {"score": score.customer_strength.score, "max": 20, "grade": score.customer_strength.grade, "percentage": score.customer_strength.percentage},
+                    "operational_maturity": {"score": score.operational_maturity.score, "max": 20, "grade": score.operational_maturity.grade, "percentage": score.operational_maturity.percentage},
+                    "financial_intelligence": {"score": score.financial_intelligence.score, "max": 20, "grade": score.financial_intelligence.grade, "percentage": score.financial_intelligence.percentage},
+                    "growth_resilience": {"score": score.growth_resilience.score, "max": 20, "grade": score.growth_resilience.grade, "percentage": score.growth_resilience.percentage},
+                },
+                "flags": {"critical": score.critical_flags, "opportunities": score.opportunity_flags},
+                "context": {
+                    "industry": input_data.industry,
+                    "yearsInBusiness": input_data.yearsInBusiness,
+                    "primaryPainPoint": input_data.primaryPainPoint,
+                    "businessName": input_data.businessName,
+                }
+            }
+        }
+        yield f"data: {json.dumps(score_payload)}\n\n"
+
+        # Phase 2: stream LLM advisory
+        full_advisory = ""
+        try:
+            stream = await openai_client.chat.completions.create(
+                model="gpt-4-turbo",
+                messages=[
+                    {"role": "system", "content": _build_pro_system_prompt()},
+                    {"role": "user", "content": _build_pro_user_prompt(input_data, score)},
+                ],
+                max_tokens=2000,
+                temperature=0.75,
+                stream=True,
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    full_advisory += delta
+                    yield f"data: {json.dumps({'type': 'token', 'data': delta})}\n\n"
+
+        except Exception as e:
+            logger.error(f"LLM streaming error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'data': str(e)})}\n\n"
+            return
+
+        # Save to Supabase (non-blocking, fire-and-forget)
+        try:
+            supabase.table("beacon_assessments").insert({
+                **input_data.model_dump(),
+                "total_score": score.total_score,
+                "readiness_level": score.readiness_level,
+                "critical_flags": score.critical_flags,
+                "opportunity_flags": score.opportunity_flags,
+                "advisory": full_advisory,
+                "tier": "pro",
+                "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            }).execute()
+        except Exception as db_err:
+            logger.warning(f"DB insert failed (non-fatal): {db_err}")
+
+        # Phase 3: done — send full advisory for PDF/email
+        yield f"data: {json.dumps({'type': 'done', 'data': full_advisory})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
+
+
+# ─────────────────────────────────────────────
+# PDF GENERATION
+# ─────────────────────────────────────────────
+
+def generate_pro_pdf(score: BeaconProScore, data: BeaconProInput, advisory: str) -> io.BytesIO:
+    logo_url = 'https://beamxsolutions.com/Beamx-Logo-Colour.png'
+    cover_bg_url = 'https://beamxsolutions.com/front-background.PNG'
+    cta_img_url = 'https://beamxsolutions.com/cta-image.png'
+    generated_date = datetime.datetime.now().strftime('%B %d, %Y')
+
+    def md_to_html(text: str) -> str:
+        text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
+        lines = text.split('\n')
+        html_lines = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith('## '):
+                html_lines.append(f'<h2 style="color:#B8860B;font-size:17px;margin:16px 0 8px;border-bottom:2px solid #B8860B;padding-bottom:4px;">{line[3:]}</h2>')
+            elif line.startswith('### '):
+                html_lines.append(f'<h3 style="color:#8B6914;font-size:14px;margin:12px 0 6px;">{line[4:]}</h3>')
+            elif line.startswith('- ') or line.startswith('• '):
+                html_lines.append(f'<li style="margin:5px 0;line-height:1.5;font-size:12px;">{line[2:]}</li>')
+            elif line == '---':
+                html_lines.append('<hr style="border:1px solid #d4af37;margin:16px 0;">')
             else:
-                story.append(Paragraph(para, styles['Normal']))
-            story.append(Spacer(1, 6))
-    
-    story.append(Spacer(1, 30))
+                html_lines.append(f'<p style="margin:5px 0;line-height:1.5;font-size:12px;">{line}</p>')
+        return '\n'.join(html_lines)
 
-    # Next Steps and Contact Information
-    story.append(Paragraph("Ready to Take Action?", heading_style))
-    story.append(Paragraph("Based on your advanced assessment results, BeamX Solutions can help you implement the strategic recommendations outlined above.", styles['Normal']))
-    story.append(Spacer(1, 12))
-    
-    story.append(Paragraph("<b>Contact Us:</b>", styles['Normal']))
-    story.append(Paragraph("🌐 Website: https://beamxsolutions.com", styles['Normal']))
-    story.append(Paragraph("📧 Email: info@beamxsolutions.com", styles['Normal']))
-    story.append(Paragraph("📞 Schedule a consultation: https://calendly.com/beamxsolutions", styles['Normal']))
-    
-    # Build PDF
-    doc.build(story)
+    advisory_html = md_to_html(advisory)
+
+    def score_bar(pct):
+        color = "#B8860B" if pct >= 70 else "#CC8800" if pct >= 50 else "#cc3300"
+        return f'<div style="background:#eee;border-radius:4px;height:10px;width:100%;"><div style="background:{color};width:{pct}%;height:10px;border-radius:4px;"></div></div>'
+
+    categories = [score.financial_health, score.customer_strength, score.operational_maturity, score.financial_intelligence, score.growth_resilience]
+    table_rows = "".join([
+        f'<tr><td style="padding:10px;border:1px solid #ddd;">{c.name}</td>'
+        f'<td style="padding:10px;border:1px solid #ddd;text-align:center;font-weight:bold;">{c.score}</td>'
+        f'<td style="padding:10px;border:1px solid #ddd;text-align:center;">20</td>'
+        f'<td style="padding:10px;border:1px solid #ddd;text-align:center;font-weight:bold;">{c.grade}</td>'
+        f'<td style="padding:10px;border:1px solid #ddd;">{score_bar(c.percentage)}</td></tr>'
+        for c in categories
+    ])
+
+    circumference = 2 * 3.14159 * 70
+    progress = (score.total_score / 100) * circumference
+
+    html_content = f'''<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+  @page {{ size: letter; margin: 0; }}
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family: Arial, sans-serif; background: #f5f5f5; color: #000; }}
+  .page {{ width:8.5in; min-height:11in; background:white; position:relative; page-break-after:always; }}
+  .page-cover {{ background-image:url('{cover_bg_url}'); background-size:cover; background-position:center; display:flex; flex-direction:column; justify-content:space-between; height:11in; }}
+  .page-content {{ padding:40px 50px 80px; background:#f5f5f5; }}
+  .footer {{ background:#1a1a2e; color:#d4af37; padding:12px 50px; display:flex; justify-content:space-between; font-size:11px; position:absolute; bottom:0; left:0; right:0; }}
+  table {{ width:100%; border-collapse:collapse; background:white; }}
+  th {{ background:#B8860B; color:white; padding:10px; text-align:center; font-size:12px; }}
+  .pro-badge {{ background:#B8860B; color:white; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:bold; display:inline-block; margin-left:8px; letter-spacing:1px; }}
+</style>
+</head><body>
+
+<!-- COVER PAGE -->
+<div class="page page-cover">
+  <div style="padding:40px 60px;display:flex;align-items:center;gap:12px;">
+    <img src="{logo_url}" style="width:160px;" />
+    <span class="pro-badge">PRO</span>
+  </div>
+  <div style="background:rgba(26,26,46,0.95);padding:80px 60px;">
+    <h1 style="font-size:54px;font-weight:bold;color:white;line-height:1.1;">Beacon Pro<br>Business<br>Assessment</h1>
+    <p style="color:#d4af37;font-size:16px;margin-top:14px;">AI-Powered Deep Diagnostic</p>
+  </div>
+  <div style="padding:40px 60px;color:white;">
+    <p style="font-weight:600;margin-bottom:4px;color:#d4af37;">Prepared For</p>
+    <p style="font-size:20px;margin-bottom:4px;">{data.fullName}</p>
+    <p style="font-size:13px;margin-bottom:16px;">{data.email}</p>
+    <p style="font-weight:600;margin-bottom:4px;color:#d4af37;">Business</p>
+    <p style="font-size:16px;margin-bottom:16px;">{data.businessName}</p>
+    <p style="font-weight:600;margin-bottom:4px;color:#d4af37;">Generated on</p>
+    <p style="font-size:15px;">{generated_date}</p>
+  </div>
+</div>
+
+<!-- SCORECARD PAGE -->
+<div class="page page-content">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+    <h2 style="color:#B8860B;font-size:20px;font-weight:bold;border-bottom:3px solid #B8860B;display:inline-block;padding-bottom:4px;">Overall Assessment</h2>
+    <span class="pro-badge">PRO</span>
+  </div>
+  <div style="display:flex;gap:24px;align-items:center;background:white;padding:20px;margin-bottom:20px;border-left:4px solid #B8860B;">
+    <svg width="160" height="160" viewBox="0 0 200 200">
+      <circle cx="100" cy="100" r="70" fill="none" stroke="#f0e0a0" stroke-width="28"/>
+      <circle cx="100" cy="100" r="70" fill="none" stroke="#B8860B" stroke-width="28"
+        stroke-dasharray="{progress:.1f} {circumference:.1f}" transform="rotate(-90 100 100)"/>
+      <text x="100" y="94" text-anchor="middle" font-size="20" font-weight="bold" fill="#000">{score.total_score}/100</text>
+      <text x="100" y="114" text-anchor="middle" font-size="10" fill="#666">Overall Score</text>
+    </svg>
+    <div>
+      <p style="font-size:18px;font-weight:bold;margin-bottom:6px;">Readiness Level</p>
+      <p style="font-size:15px;color:#B8860B;margin-bottom:12px;">{score.readiness_level}</p>
+      <p style="font-size:12px;margin-bottom:3px;"><strong>Business:</strong> {data.businessName}</p>
+      <p style="font-size:12px;margin-bottom:3px;"><strong>Industry:</strong> {data.industry}</p>
+      <p style="font-size:12px;margin-bottom:3px;"><strong>Years in Business:</strong> {data.yearsInBusiness}</p>
+      <p style="font-size:12px;"><strong>Primary Challenge:</strong> {data.primaryPainPoint}</p>
+    </div>
+  </div>
+  <h2 style="color:#B8860B;font-size:16px;font-weight:bold;border-bottom:2px solid #B8860B;display:inline-block;padding-bottom:3px;margin-bottom:12px;">Score Breakdown</h2>
+  <table style="margin-bottom:20px;"><thead><tr><th>Category</th><th>Score</th><th>Max</th><th>Grade</th><th>Performance</th></tr></thead><tbody>{table_rows}</tbody></table>
+  <div style="display:flex;gap:14px;">
+    <div style="flex:1;background:#fee;border-left:4px solid #cc3300;padding:14px;border-radius:4px;">
+      <p style="font-weight:bold;color:#cc3300;margin-bottom:8px;font-size:12px;">Critical Flags</p>
+      {''.join([f'<p style="font-size:11px;margin:3px 0;">⚠ {f.replace("_"," ")}</p>' for f in score.critical_flags]) if score.critical_flags else '<p style="font-size:11px;">None detected</p>'}
+    </div>
+    <div style="flex:1;background:#fffbee;border-left:4px solid #B8860B;padding:14px;border-radius:4px;">
+      <p style="font-weight:bold;color:#B8860B;margin-bottom:8px;font-size:12px;">Opportunity Flags</p>
+      {''.join([f'<p style="font-size:11px;margin:3px 0;">✓ {f.replace("_"," ")}</p>' for f in score.opportunity_flags]) if score.opportunity_flags else '<p style="font-size:11px;">None detected</p>'}
+    </div>
+  </div>
+  <div class="footer"><span>Beacon Pro — {data.businessName}</span><span>Copyright © 2025 BeamX Solutions</span></div>
+</div>
+
+<!-- ADVISORY PAGE -->
+<div class="page page-content">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+    <h2 style="color:#B8860B;font-size:20px;font-weight:bold;border-bottom:3px solid #B8860B;display:inline-block;padding-bottom:4px;">AI-Powered Strategic Advisory</h2>
+    <span class="pro-badge">PRO</span>
+  </div>
+  <div style="background:white;padding:20px;border-left:4px solid #B8860B;">{advisory_html}</div>
+  <div class="footer"><span>Beacon Pro — {data.businessName}</span><span>Copyright © 2025 BeamX Solutions</span></div>
+</div>
+
+<!-- CTA PAGE -->
+<div class="page" style="background:#1a1a2e;padding:60px;color:white;height:11in;">
+  <h2 style="font-size:34px;font-weight:bold;border-bottom:4px solid #d4af37;display:inline-block;padding-bottom:8px;margin-bottom:28px;">Ready to Take Action?</h2>
+  <div style="background:rgba(212,175,55,0.1);border:1px solid #d4af37;padding:20px;border-radius:8px;margin-bottom:28px;font-size:14px;line-height:1.6;color:white;">
+    You've completed the most comprehensive AI-powered business diagnostic available for SMEs. The analysis above was written specifically for {data.businessName}. Now it's time to act.
+  </div>
+  <img src="{cta_img_url}" style="width:100%;height:320px;object-fit:cover;border-radius:8px;margin-bottom:28px;" />
+  <div style="font-size:15px;line-height:2.4;color:#d4af37;">
+    <p>🌐 www.beamxsolutions.com</p>
+    <p>✉️ info@beamxsolutions.com</p>
+    <p>📅 https://calendly.com/beamxsolutions</p>
+  </div>
+</div>
+
+</body></html>'''
+
+    buffer = io.BytesIO()
+    HTML(string=html_content).write_pdf(buffer, font_config=FontConfiguration())
     buffer.seek(0)
     return buffer
 
-# --- Email Sending Function ---
-def send_email_with_resend(recipient_email: str, result: Dict, form_data: AdvancedScorecardInput) -> bool:
-    """Send advanced assessment results via email with PDF attachment using Resend"""
-    if not resend_api_key:
-        logger.error("Resend API key not configured")
-        return False
 
+# ─────────────────────────────────────────────
+# EMAIL
+# ─────────────────────────────────────────────
+
+def _build_pro_email_html(data: BeaconProInput, score: BeaconProScore) -> str:
+    return f"""<body style="font-family:Arial,sans-serif;background:#f5f5f5;margin:0;padding:0;">
+<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:20px 0;">
+<table width="600" cellpadding="0" cellspacing="0">
+  <tr><td style="background:#1a1a2e;padding:40px 20px;text-align:center;">
+    <img src="https://beamxsolutions.com/asset-1-2.png" width="112" height="50" style="display:block;margin:0 auto 12px;" />
+    <span style="background:#B8860B;color:white;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:bold;letter-spacing:1px;">PRO</span>
+    <h1 style="color:#d4af37;font-size:24px;margin:12px 0 0;">Your Beacon Pro Report</h1>
+    <p style="color:#aaa;font-size:13px;margin:6px 0 0;">AI-Powered Deep Diagnostic</p>
+  </td></tr>
+  <tr><td style="height:20px;background:#f5f5f5;"></td></tr>
+  <tr><td style="padding:0 30px;background:#f5f5f5;">
+    <p style="font-size:14px;line-height:1.6;">Hello {data.fullName},<br><br>
+    Your AI-powered Beacon Pro assessment for <strong>{data.businessName}</strong> is attached. This report was generated specifically for your business — every recommendation and insight is based on your exact answers.</p>
+  </td></tr>
+  <tr><td style="height:16px;background:#f5f5f5;"></td></tr>
+  <tr><td align="center" style="background:#f5f5f5;">
+    <table width="380" cellpadding="22" cellspacing="0" style="background:#1a1a2e;border:2px solid #d4af37;border-radius:8px;">
+      <tr><td>
+        <p style="color:#d4af37;font-size:20px;font-weight:700;margin:0;">Score: {score.total_score}/100</p>
+        <p style="color:#fff;font-size:13px;margin:6px 0 0;">{score.readiness_level}</p>
+      </td></tr>
+    </table>
+  </td></tr>
+  <tr><td style="height:16px;background:#f5f5f5;"></td></tr>
+  <tr><td style="padding:0 30px;background:#f5f5f5;">
+    <table width="100%" cellpadding="16" cellspacing="0" style="background:white;border-radius:8px;border-top:3px solid #B8860B;">
+      <tr><td>
+        <h2 style="color:#B8860B;font-size:15px;margin:0 0 14px;">Score Breakdown</h2>
+        <p style="font-size:13px;margin:0 0 8px;">💰 Financial Health: <strong>{score.financial_health.score}/20</strong> — {score.financial_health.grade}</p>
+        <p style="font-size:13px;margin:0 0 8px;">🤝 Customer Strength: <strong>{score.customer_strength.score}/20</strong> — {score.customer_strength.grade}</p>
+        <p style="font-size:13px;margin:0 0 8px;">⚙️ Operational Maturity: <strong>{score.operational_maturity.score}/20</strong> — {score.operational_maturity.grade}</p>
+        <p style="font-size:13px;margin:0 0 8px;">📊 Financial Intelligence: <strong>{score.financial_intelligence.score}/20</strong> — {score.financial_intelligence.grade}</p>
+        <p style="font-size:13px;margin:0;">📈 Growth & Resilience: <strong>{score.growth_resilience.score}/20</strong> — {score.growth_resilience.grade}</p>
+      </td></tr>
+    </table>
+  </td></tr>
+  <tr><td style="height:16px;background:#f5f5f5;"></td></tr>
+  <tr><td align="center" style="background:#f5f5f5;">
+    <table cellpadding="0" cellspacing="0"><tr>
+      <td style="background:#B8860B;border-radius:8px;">
+        <a href="https://calendly.com/beamxsolutions" style="display:inline-block;padding:13px 26px;color:white;text-decoration:none;font-size:14px;font-weight:700;">Book Your Free Strategy Call</a>
+      </td>
+    </tr></table>
+  </td></tr>
+  <tr><td style="height:16px;background:#f5f5f5;"></td></tr>
+  <tr><td style="background:#1a1a2e;padding:20px;text-align:center;">
+    <p style="color:#d4af37;font-size:12px;margin:0 0 6px;">www.beamxsolutions.com | info@beamxsolutions.com</p>
+    <p style="color:#888;font-size:11px;margin:0;">Copyright © 2025 BeamX Solutions</p>
+  </td></tr>
+</table></td></tr></table>
+</body>"""
+
+
+# ─────────────────────────────────────────────
+# REST ENDPOINTS
+# ─────────────────────────────────────────────
+
+@app.post("/download-pdf")
+async def download_pdf(payload: dict):
     try:
-        # Generate PDF
-        pdf_buffer = generate_pdf_report(result, form_data)
-        pdf_content = pdf_buffer.read()
-        pdf_base64 = base64.b64encode(pdf_content).decode()
-
-        # Create email content - optimized for email clients
-        html_content = f"""
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>BeamX Solutions - Advanced Business Assessment Results</title>
-            <!--[if mso]>
-            <style type="text/css">
-                body, table, td {{font-family: Arial, sans-serif !important;}}
-            </style>
-            <![endif]-->
-        </head>
-        <body style="margin: 0; padding: 0; background-color: white; font-family: Arial, Helvetica, sans-serif;">
-            <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #white;">
-                <tr>
-                    <td align="center" style="padding: 20px 0;">
-                        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #f5f5f5;">
-
-                            <!-- Header -->
-                            <tr>
-                                <td style="background-color: #02428e; padding: 40px 20px; text-align: center;">
-                                    <img src="https://beamxsolutions.com/asset-1-2.png" alt="BeamX Solutions" width="112" height="50" style="display: block; margin: 0 auto 24px;" />
-                                    <h1 style="color: #ffffff; font-size: 36px; font-weight: 600; margin: 0; line-height: 48px; font-family: Arial, Helvetica, sans-serif;">
-                                        Your Advanced Business<br>Assessment Results
-                                    </h1>
-                                </td>
-                            </tr>
-
-                            <!-- Spacer -->
-                            <tr><td style="height: 28px;"></td></tr>
-
-                            <!-- Introduction -->
-                            <tr>
-                                <td style="padding: 0 30px;">
-                                    <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0;">
-                                        Hello {form_data.full_name or ''}!<br><br>
-                                        Thank you for completing the BeamX Solutions Advanced Business Assessment. Your tailored results are ready!
-                                    </p>
-                                </td>
-                            </tr>
-
-                            <!-- Spacer -->
-                            <tr><td style="height: 28px;"></td></tr>
-
-                            <!-- Score Card -->
-                            <tr>
-                                <td align="center">
-                                    <table width="347" cellpadding="28" cellspacing="0" style="background-color: #008bd8; border-radius: 8px;">
-                                        <tr>
-                                            <td>
-                                                <p style="color: #ffffff; font-size: 20px; font-weight: 700; line-height: 28px; margin: 0;">
-                                                    Your Overall Score: {result['total_score']}/150
-                                                </p>
-                                            </td>
-                                        </tr>
-                                    </table>
-                                </td>
-                            </tr>
-
-                            <!-- Spacer -->
-                            <tr><td style="height: 28px;"></td></tr>
-
-                            <!-- Score Breakdown Card -->
-                            <tr>
-                                <td style="padding: 0 30px;">
-                                    <table width="100%" cellpadding="20" cellspacing="0" style="background-color: #ffffff; border-radius: 8px;">
-                                        <tr>
-                                            <td>
-                                                <h2 style="color: #008bd8; font-size: 16px; font-weight: 700; margin: 0 0 24px 0;">Score Breakdown</h2>
-
-                                                <!-- Financial Health -->
-                                                <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0 0 12px 0;">
-                                                    <span style="font-weight: 600;">💰 Financial Health:</span> {result['scores']['financial']}/25
-                                                </p>
-
-                                                <!-- Growth Readiness -->
-                                                <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0 0 12px 0;">
-                                                    <span style="font-weight: 600;">📈 Growth & Marketing:</span> {result['scores']['growth']}/25
-                                                </p>
-
-                                                <!-- Digital Maturity -->
-                                                <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0 0 12px 0;">
-                                                    <span style="font-weight: 600;">⚙️ Operations & Systems:</span> {result['scores']['operations']}/25
-                                                </p>
-
-                                                <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0 0 12px 0;">
-                                                    <span style="font-weight: 600;">👥 Team & Management:</span> {result['scores']['team']}/25
-                                                </p>
-
-                                                <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0 0 12px 0;">
-                                                    <span style="font-weight: 600;">💻 Digital Adoption:</span> {result['scores']['digital']}/25
-                                                </p>
-
-                                                <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0;">
-                                                    <span style="font-weight: 600;">🎯 Strategic Position:</span> {result['scores']['strategic']}/25
-                                                </p>
-                                            </td>
-                                        </tr>
-                                    </table>
-                                </td>
-                            </tr>
-
-                            <!-- Spacer -->
-                            <tr><td style="height: 28px;"></td></tr>
-
-                            <!-- PDF Info -->
-                            <tr>
-                                <td style="padding: 0 30px;">
-                                    <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0;">
-                                        Your detailed assessment report is attached as a PDF with personalized recommendations and next steps.
-                                    </p>
-                                </td>
-                            </tr>
-
-                            <!-- Spacer -->
-                            <tr><td style="height: 28px;"></td></tr>
-
-                            <!-- What's Next Title -->
-                            <tr>
-                                <td style="padding: 0 30px;">
-                                    <h2 style="color: #008bd8; font-size: 16px; font-weight: 700; margin: 0;">What's Next?</h2>
-                                </td>
-                            </tr>
-
-                            <!-- Spacer -->
-                            <tr><td style="height: 28px;"></td></tr>
-
-                            <!-- What's Next Content -->
-                            <tr>
-                                <td style="padding: 0 30px;">
-                                    <p style="color: #1d1d1b; font-size: 14px; line-height: 20px; margin: 0;">
-                                        Ready to transform these insights into growth? Our team specializes in helping {form_data.business_type.lower()} businesses like yours overcome challenges like "{form_data.primary_challenge.lower()}" and achieve your goal of "{form_data.main_goal.lower()}" with sustainable growth.
-                                    </p>
-                                </td>
-                            </tr>
-
-                            <!-- Spacer -->
-                            <tr><td style="height: 28px;"></td></tr>
-
-                            <!-- CTA Button -->
-                            <tr>
-                                <td align="center">
-                                    <table cellpadding="0" cellspacing="0">
-                                        <tr>
-                                            <td style="background-color: #f27900; border-radius: 8px;">
-                                                <a href="https://calendly.com/beamxsolutions" style="display: inline-block; padding: 12px 24px; color: #ffffff; text-decoration: none; font-size: 14px; font-weight: 600; font-family: Arial, Helvetica, sans-serif;">
-                                                    Schedule Your Free Consultation
-                                                </a>
-                                            </td>
-                                        </tr>
-                                    </table>
-                                </td>
-                            </tr>
-
-                            <!-- Spacer -->
-                            <tr><td style="height: 28px;"></td></tr>
-
-                            <!-- Footer -->
-                            <tr>
-                                <td style="background-color: #02428e; padding: 24px 20px; text-align: center;">
-                                    <p style="color: #ffffff; font-size: 14px; margin: 0 0 16px 0;">Follow us on</p>
-
-                                    <!-- Social Icons -->
-                                    <table cellpadding="0" cellspacing="0" align="center" style="margin: 0 auto 32px auto; text-align: center;">
-                                        <tr>
-                                            <!-- Facebook -->
-                                            <td style="padding: 0 12px;">
-                                                <a href="https://facebook.com/beamxsolutions" style="display: inline-block; text-decoration: none;">
-                                                    <img src="https://beamxsolutions.com/facebook-img.png" alt="Facebook" width="24" height="24" style="display: block;">
-                                                </a>
-                                            </td>
-                                            <!-- Instagram -->
-                                            <td style="padding: 0 12px;">
-                                                <a href="https://instagram.com/beamxsolutions" style="display: inline-block; text-decoration: none;">
-                                                    <img src="https://beamxsolutions.com/instagram-img.png" alt="Instagram" width="24" height="24" style="display: block;">
-                                                </a>
-                                            </td>
-                                            <!-- Twitter/X -->
-                                            <td style="padding: 0 12px;">
-                                                <a href="https://twitter.com/beamxsolutions" style="display: inline-block; text-decoration: none;">
-                                                    <img src="https://beamxsolutions.com/twitter-img.png" alt="Twitter" width="24" height="24" style="display: block;">
-                                                </a>
-                                            </td>
-                                            <!-- LinkedIn -->
-                                            <td style="padding: 0 12px;">
-                                                <a href="https://linkedin.com/company/beamxsolutions" style="display: inline-block; text-decoration: none;">
-                                                    <img src="https://beamxsolutions.com/linkedin-img.png" alt="LinkedIn" width="24" height="24" style="display: block;">
-                                                </a>
-                                            </td>
-                                        </tr>
-                                    </table>
-
-                                    <p style="color: #ffffff; font-size: 14px; margin: 0 0 32px 0;">
-                                        <a href="https://beamxsolutions.com" style="color: #ffffff; text-decoration: none;">www.beamxsolutions.com</a>
-                                    </p>
-
-                                    <p style="color: #ffffff; font-size: 14px; line-height: 20px; margin: 0 0 32px 0;">
-                                        This email was generated from your advanced business assessment <br>at
-                                        <a href="https://beamxsolutions.com/tools/advanced-business-assessment" style="color: #ffffff; text-decoration: underline;">beamxsolutions.com/tools/advanced-business-assessment</a>
-                                    </p>
-
-                                    <p style="color: #008bd8; font-size: 14px; margin: 0;">
-                                        Copyright © 2025 BeamXSolutions
-                                    </p>
-                                </td>
-                            </tr>
-
-                        </table>
-                    </td>
-                </tr>
-            </table>
-        </body>
-        </html>
-        """
-
-        # Plain text version
-        text_content = f"""
-        Your Advanced Business Assessment Results - BeamX Solutions
-
-        Hello {form_data.full_name or ''}!
-
-        Thank you for completing the BeamX Solutions Advanced Business Assessment. Your results are ready!
-
-        Your Score: {result['total_score']}/150
-
-        Score Breakdown:
-        • Financial Health: {result['scores']['financial']}/25
-        • Growth & Marketing: {result['scores']['growth']}/25
-        • Operations & Systems: {result['scores']['operations']}/25
-        • Team & Management: {result['scores']['team']}/25
-        • Digital Adoption: {result['scores']['digital']}/25
-        • Strategic Position: {result['scores']['strategic']}/25
-
-        Your detailed assessment report is attached as a PDF with personalized recommendations.
-
-        What's Next?
-        Ready to transform these insights into growth? Our team specializes in helping {form_data.business_type.lower()} businesses overcome challenges like "{form_data.primary_challenge.lower()}" and achieve your goal of "{form_data.main_goal.lower()}" with sustainable growth.
-
-        Schedule Your Free Consultation: https://calendly.com/beamxsolutions
-
-        Contact Us:
-        Website: https://beamxsolutions.com
-        Email: info@beamxsolutions.com
-
-        Follow Us:
-        Facebook: https://facebook.com/beamxsolutions
-        Instagram: https://instagram.com/beamxsolutions
-        Twitter/X: https://twitter.com/beamxsolutions
-        LinkedIn: https://linkedin.com/company/beamxsolutions
-
-        Best regards,
-        The BeamX Solutions Team
-
-        ---
-        This email was generated from your advanced business assessment at https://beamxsolutions.com/tools/advanced-business-assessment
-
-        Copyright © 2025 BeamXSolutions
-        """
-
-        # Send email using Resend
-        params = {
-            "from": f"BeamX Solutions <{from_email}>",
-            "to": [recipient_email],
-            "subject": f"Your Advanced Business Assessment Results: {result['total_score']}/150 📊",
-            "html": html_content,
-            "text": text_content,
-            "attachments": [
-                {
-                    "filename": "BeamX_Advanced_Assessment_Report.pdf",
-                    "content": pdf_base64
-                }
-            ]
-        }
-
-        email_response = resend.Emails.send(params)
-
-        logger.info(f"Email sent successfully via Resend to {recipient_email}, ID: {email_response.get('id', 'unknown')}")
-        return True
-
-    except Exception as e:
-        logger.error(f"Failed to send email via Resend to {recipient_email}: {str(e)}")
-        return False
-
-# --- Enhanced Insight Generator ---
-def generate_Advanced_insight(data: AdvancedScorecardInput, scores: Dict[str, int]) -> str:
-    if not anthropic_client.api_key:
-        raise HTTPException(status_code=500, detail="Anthropic API key is not configured")
-
-    f, g, o, t, d, s = scores['financial'], scores['growth'], scores['operations'], scores['team'], scores['digital'], scores['strategic']
-
-    context_details = f"""
-    BUSINESS PROFILE:
-    - Business Type: {data.business_type}
-    - Business Age: {data.business_age}
-    - Team Size: {data.team_size}
-    - Location Importance: {data.location_importance}
-    - Company Name: {data.company_name or 'Not provided'}
-    - Contact: {data.full_name or 'Not provided'} ({data.email or 'Not provided'})
-
-    FINANCIAL SITUATION:
-    - Revenue: {data.revenue} (Trend: {data.revenue_trend})
-    - Profit Margin: {data.profit_margin} (Awareness: {data.profit_margin_known})
-    - Cash Flow: {data.cash_flow}
-    - Financial Planning: {data.financial_planning}
-
-    GROWTH & MARKETING:
-    - Customer Acquisition: {data.customer_acquisition}
-    - Cost Awareness: {data.customer_cost_awareness}
-    - Customer Retention: {data.customer_retention}
-    - Repeat Business: {data.repeat_business}
-    - Marketing Budget: {data.marketing_budget}
-    - Online Presence: {data.online_presence}
-    - Customer Feedback: {data.customer_feedback}
-
-    OPERATIONS & SYSTEMS:
-    - Record Keeping: {data.record_keeping}
-    - Inventory Management: {data.inventory_management}
-    - Scheduling Systems: {data.scheduling_systems}
-    - Quality Control: {data.quality_control}
-    - Supplier Relationships: {data.supplier_relationships}
-
-    TEAM & MANAGEMENT:
-    - Hiring Process: {data.hiring_process}
-    - Employee Training: {data.employee_training}
-    - Delegation: {data.delegation}
-    - Performance Tracking: {data.performance_tracking}
-
-    DIGITAL ADOPTION:
-    - Payment Systems: {data.payment_systems}
-    - Data Backup: {data.data_backup}
-    - Communication Tools: {data.communication_tools}
-    - Website Functionality: {data.website_functionality}
-    - Social Media Use: {data.social_media_use}
-
-    STRATEGIC POSITION:
-    - Market Knowledge: {data.market_knowledge}
-    - Competitive Advantage: {data.competitive_advantage}
-    - Customer Segments: {data.customer_segments}
-    - Pricing Strategy: {data.pricing_strategy}
-    - Growth Planning: {data.growth_planning}
-
-    CURRENT SITUATION:
-    - Primary Challenge: {data.primary_challenge}
-    - Main Goal: {data.main_goal}
-    """
-
-    maturity_indicators = {
-        'startup': data.business_age in ["Less than 1 year", "1-3 years"] and data.team_size in ["Solo operation", "2-5 people"],
-        'growing': data.business_age in ["1-3 years", "3-10 years"] and data.revenue in ["$50K–$250K", "$250K–$1M"],
-        'established': data.business_age == "10+ years" or data.revenue in ["$1M–$5M", "Over $5M"],
-        'solo_professional': data.team_size == "Solo operation" and data.business_type in ["Professional Services", "Consulting"]
-    }
-
-    business_context = "startup" if maturity_indicators['startup'] else "established business" if maturity_indicators['established'] else "growing business"
-    if maturity_indicators['solo_professional']:
-        business_context = "solo professional practice"
-
-    beamx_services_context = f"""
-    BEAMX SOLUTIONS AVAILABLE:
-    1. **Managed Intelligence Services** – Business intelligence reports & dashboards for key metrics and data-driven decisions
-    2. **Web & Workflow Engineering** – High-converting websites and automated workflows to save time
-    3. **Data Infrastructure & Automation** – Clean databases, smooth APIs, and integrated systems
-    4. **AI & Machine Learning** – Predictive models for customer behavior, fraud detection, and opportunity identification
-    5. **Custom AI Agents** – Digital employees for support tickets, lead qualification, data analysis, and operations
-    """
-
-    prompt = f"""
-    You are a business consultant specializing in {data.business_type} businesses. Analyze this {business_context}:
-
-    ASSESSMENT SCORES:
-    • Financial Health: {f}/25
-    • Growth & Marketing: {g}/25
-    • Operations & Systems: {o}/25
-    • Team & Management: {t}/25
-    • Digital Adoption: {d}/25
-    • Strategic Position: {s}/25
-    • Overall Score: {f+g+o+t+d+s}/150
-
-    {context_details}
-
-    {beamx_services_context}
-
-    ANALYSIS REQUIREMENTS:
-    1. **Business Health Summary** (2-3 sentences): Assess their current position as a {data.business_age} {data.business_type} business.
-    2. **Key Strengths**: Identify 2-3 areas where they're performing well, considering their business type and size.
-    3. **Priority Improvements**: Highlight the 2-3 most critical areas for improvement that would directly impact their stated goal: "{data.main_goal}".
-    4. **Actionable Recommendations**: Provide 4-6 specific recommendations that are:
-       - Appropriate for a {data.business_type} business of their size
-       - Directly address their challenge: "{data.primary_challenge}"
-       - Realistic given their current systems and resources
-       - Include both immediate (30 days) and medium-term (3-6 months) actions
-    5. **Implementation Priority**: Rank your recommendations by impact vs. effort, focusing on what will move the needle most for their revenue/profitability.
-    6. **Success Metrics**: Suggest 3-4 practical metrics they should track, appropriate for their business type and current sophistication level.
-    7. **How BeamX Can Accelerate Your Growth**: Based on their specific assessment results, identify 2-3 BeamX services that would have the highest impact on their business. Be specific about:
-       - Which gaps these services address from their assessment
-       - Expected business outcomes (time saved, revenue increase, efficiency gains)
-       - Why these solutions fit their current stage and challenges
-       - Concrete examples relevant to their business type
-
-    Tailor advice specifically for {data.business_type} businesses. Avoid startup/tech jargon if this is a traditional business. Focus on practical, implementable advice that fits their business model and current capabilities.
-    """
-
-    try:
-        response = anthropic_client.messages.create(
-            model="claude-sonnet-4-5-20250929",
-            max_tokens=2000,
-            temperature=0.7,
-            messages=[{"role": "user", "content": prompt}]
+        form_data = BeaconProInput(**payload["formData"])
+        score = calculate_score(form_data)
+        advisory = payload.get("result", {}).get("advisory", "")
+        pdf_buffer = generate_pro_pdf(score, form_data, advisory)
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=Beacon_Pro_{form_data.businessName.replace(' ', '_')}.pdf"}
         )
-        return response.content[0].text.strip()
-    except AnthropicError as e:
-        raise HTTPException(status_code=500, detail=f"Anthropic API error: {str(e)}")
-
-# --- Complete Assessment Function ---
-def run_Advanced_assessment(data: AdvancedScorecardInput) -> Dict[str, Any]:
-    """Run complete business assessment and generate insights"""
-    scores = {
-        'financial': score_financial(data),
-        'growth': score_growth(data),
-        'operations': score_operations(data),
-        'team': score_team(data),
-        'digital': score_digital(data),
-        'strategic': score_strategic(data)
-    }
-
-    insight = generate_Advanced_insight(data, scores)
-
-    # Save to Supabase advanced_assessments table
-    try:
-        insert_data = {
-            "full_name": data.full_name,
-            "company_name": data.company_name,
-            "email": data.email,
-            "revenue": data.revenue,
-            "revenue_trend": data.revenue_trend,
-            "profit_margin_known": data.profit_margin_known,
-            "profit_margin": data.profit_margin,
-            "cash_flow": data.cash_flow,
-            "financial_planning": data.financial_planning,
-            "customer_acquisition": data.customer_acquisition,
-            "customer_cost_awareness": data.customer_cost_awareness,
-            "customer_retention": data.customer_retention,
-            "repeat_business": data.repeat_business,
-            "marketing_budget": data.marketing_budget,
-            "online_presence": data.online_presence,
-            "customer_feedback": data.customer_feedback,
-            "record_keeping": data.record_keeping,
-            "inventory_management": data.inventory_management,
-            "scheduling_systems": data.scheduling_systems,
-            "quality_control": data.quality_control,
-            "supplier_relationships": data.supplier_relationships,
-            "team_size": data.team_size,
-            "hiring_process": data.hiring_process,
-            "employee_training": data.employee_training,
-            "delegation": data.delegation,
-            "performance_tracking": data.performance_tracking,
-            "payment_systems": data.payment_systems,
-            "data_backup": data.data_backup,
-            "communication_tools": data.communication_tools,
-            "website_functionality": data.website_functionality,
-            "social_media_use": data.social_media_use,
-            "market_knowledge": data.market_knowledge,
-            "competitive_advantage": data.competitive_advantage,
-            "customer_segments": data.customer_segments,
-            "pricing_strategy": data.pricing_strategy,
-            "growth_planning": data.growth_planning,
-            "business_type": data.business_type,
-            "business_age": data.business_age,
-            "primary_challenge": data.primary_challenge,
-            "main_goal": data.main_goal,
-            "location_importance": data.location_importance,
-            "financial_score": scores['financial'],
-            "growth_score": scores['growth'],
-            "operations_score": scores['operations'],
-            "team_score": scores['team'],
-            "digital_score": scores['digital'],
-            "strategic_score": scores['strategic'],
-            "total_score": sum(scores.values()),
-            "insight": insight,
-            "created_at": datetime.now().isoformat()
-        }
-        response = supabase.table("advanced_assessments").insert(insert_data).execute()
-        logger.info(f"Successfully saved assessment with ID: {response.data[0]['id'] if response.data else 'unknown'}")
     except Exception as e:
-        logger.error(f"Error saving to Supabase: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error saving to Supabase: {str(e)}")
+        logger.error(f"PDF error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    return {
-        'scores': scores,
-        'total_score': sum(scores.values()),
-        'max_score': 150,
-        'insight': insight,
-        'assessment_data': insert_data
-    }
-
-# --- API Endpoints ---
-@app.post("/assess", response_model=dict)
-async def assess_business(data: AdvancedScorecardInput):
-    """Run business assessment based on input data"""
-    try:
-        result = run_Advanced_assessment(data)
-        
-        # ✨ NEW: Automatically send email with results
-        try:
-            email_sent = send_email_with_resend(
-                data.email,
-                result,
-                data
-            )
-            if email_sent:
-                logger.info(f"Advanced assessment results automatically sent to {data.email}")
-                result["email_sent"] = True
-            else:
-                logger.warning(f"Failed to automatically send email to {data.email}")
-                result["email_sent"] = False
-        except Exception as email_error:
-            logger.error(f"Error sending automatic email to {data.email}: {email_error}")
-            result["email_sent"] = False
-        
-        return result
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Error processing assessment: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing assessment: {str(e)}")
 
 @app.post("/email-results")
-async def email_results(email_request: EmailRequest):
-    """Send advanced assessment results via email using Resend"""
-    logger.info(f"Sending email via Resend to {email_request.email}")
-    
+async def email_results(payload: dict):
     try:
-        # Send email with PDF attachment
-        success = send_email_with_resend(
-            email_request.email,
-            email_request.result,
-            email_request.formData
-        )
-        
-        if success:
-            # Log the email send to Supabase
-            try:
-                supabase.table("email_logs").insert({
-                    "recipient_email": email_request.email,
-                    "total_score": email_request.result.get("total_score"),
-                    "industry": email_request.formData.business_type,
-                    "sent_at": datetime.now().isoformat(),
-                    "email_provider": "resend"
-                }).execute()
-                logger.info(f"Email send logged to database for {email_request.email}")
-            except Exception as e:
-                logger.warning(f"Failed to log email send to database: {e}")
-            
-            return {
-                "status": "success",
-                "message": "Email sent successfully via Resend",
-                "provider": "resend"
-            }
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to send email via Resend"
-            )
-            
+        recipient_email = payload.get("email")
+        if not recipient_email:
+            raise HTTPException(status_code=400, detail="Email address is required")
+        form_data = BeaconProInput(**payload["formData"])
+        score = calculate_score(form_data)
+        advisory = payload.get("result", {}).get("advisory", "")
+        if not advisory:
+            raise HTTPException(status_code=400, detail="Advisory not found in payload")
+        if not resend_api_key:
+            raise HTTPException(status_code=500, detail="Email not configured.")
+        form_data_for_email = form_data.model_copy(update={"email": recipient_email})
+        pdf_buffer = generate_pro_pdf(score, form_data_for_email, advisory)
+        pdf_b64 = base64.b64encode(pdf_buffer.read()).decode()
+        resend.Emails.send({
+            "from": f"BeamX Solutions <{from_email}>",
+            "to": [recipient_email],
+            "subject": f"Your Beacon Pro Report: {score.total_score}/100 — {score.readiness_level} | {form_data.businessName}",
+            "html": _build_pro_email_html(form_data_for_email, score),
+            "attachments": [{"filename": "Beacon_Pro_Assessment_Report.pdf", "content": pdf_b64}]
+        })
+        return {"status": "success", "message": f"Report sent to {recipient_email}"}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in email_results: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"An unexpected error occurred while sending email: {str(e)}"
-        )
+        logger.error(f"Email error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Email failed: {str(e)}")
 
-@app.get("/")
-async def root():
-    """Health check endpoint"""
-    return {
-        "message": "Advanced Business Assessment API is running",
-        "version": "1.0.0",
-        "email_provider": "resend" if resend_api_key else None,
-        "email_configured": bool(resend_api_key)
-    }
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "version": "1.0.0", "tool": "Beacon Pro", "architecture": "pure LLM streaming"}
+
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    logger.info(f"Starting server on port {port}")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8001)))
