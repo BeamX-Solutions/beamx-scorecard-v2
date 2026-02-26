@@ -2,7 +2,7 @@ fastapi
 uvicorn
 pydantic
 pydantic[email]
-openai
+anthropic
 weasyprint
 supabase
 python-multipart

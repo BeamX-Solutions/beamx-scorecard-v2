@@ -13,7 +13,7 @@ import logging
 from weasyprint import HTML
 from weasyprint.text.fonts import FontConfiguration
 from supabase import create_client, Client
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic
 import resend
 
 # ─────────────────────────────────────────────
@@ -34,7 +34,7 @@ app.add_middleware(
 )
 
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY"))
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+claude_client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 resend_api_key = os.getenv("RESEND_API_KEY")
 from_email = os.getenv("FROM_EMAIL", "noreply@beamxsolutions.com")
 if resend_api_key:
@@ -396,21 +396,17 @@ async def generate_report_stream(input_data: BeaconProInput):
         # Phase 2: stream LLM advisory
         full_advisory = ""
         try:
-            stream = await openai_client.chat.completions.create(
-                model="gpt-4-turbo",
+            async with claude_client.messages.stream(
+                model="claude-sonnet-4-6",
+                system=_build_pro_system_prompt(),
                 messages=[
-                    {"role": "system", "content": _build_pro_system_prompt()},
                     {"role": "user", "content": _build_pro_user_prompt(input_data, score)},
                 ],
                 max_tokens=2000,
-                temperature=0.75,
-                stream=True,
-            )
-            async for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    full_advisory += delta
-                    yield f"data: {json.dumps({'type': 'token', 'data': delta})}\n\n"
+            ) as stream:
+                async for text in stream.text_stream:
+                    full_advisory += text
+                    yield f"data: {json.dumps({'type': 'token', 'data': text})}\n\n"
 
         except Exception as e:
             logger.error(f"LLM streaming error: {e}")
