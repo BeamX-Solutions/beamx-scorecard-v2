@@ -16,9 +16,9 @@ from supabase import create_client, Client
 from anthropic import AsyncAnthropic
 import resend
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 # SETUP
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,9 +41,9 @@ if resend_api_key:
     resend.api_key = resend_api_key
 
 
-# ─────────────────────────────────────────────
-# INPUT SCHEMA (identical to Beacon)
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
+# INPUT SCHEMA
+# ---------------------------------------------------------
 
 class BeaconProInput(BaseModel):
     fullName: str = Field(min_length=1, max_length=100)
@@ -144,9 +144,9 @@ class BeaconProInput(BaseModel):
     ]
 
 
-# ─────────────────────────────────────────────
-# SCORING MAPS (identical to Beacon)
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
+# SCORING MAPS
+# ---------------------------------------------------------
 
 CASH_FLOW_MAP = {"Consistent surplus": 5, "Breaking even": 3, "Unpredictable (some surplus, some deficit)": 2, "Burning cash consistently": 0, "Don't know": 0}
 PROFIT_MARGIN_MAP = {"30%+": 5, "20-30%": 4, "10-20%": 3, "5-10%": 2, "Less than 5% or negative": 1, "Don't know": 0}
@@ -169,9 +169,9 @@ INFRASTRUCTURE_MAP = {"Consistent power/internet/supply": 5, "Mostly reliable wi
 BANKING_MAP = {"Strong, accessed loans/credit": 5, "Accounts but no credit": 3, "Minimal interaction": 1, "No bank relationship": 0}
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 # DATA CLASSES
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 
 @dataclass
 class CategoryScore:
@@ -197,9 +197,9 @@ class BeaconProScore:
     opportunity_flags: List[str]
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 # SCORING ENGINE
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 
 def calculate_score(data: BeaconProInput) -> BeaconProScore:
     def get_grade(pct: float) -> str:
@@ -233,11 +233,11 @@ def calculate_score(data: BeaconProInput) -> BeaconProScore:
     gr_score = gr_base_score + context_raw
     total = fh_score + cs_score + om_score + fi_score + gr_score
 
-    if total >= 85:   level = "🏆 Scale-Ready"
-    elif total >= 70: level = "💪 Stable Foundation"
-    elif total >= 50: level = "🔨 Building Blocks"
-    elif total >= 30: level = "⚠️ Survival Mode"
-    else:             level = "🚨 Red Alert"
+    if total >= 85:   level = "Scale-Ready"
+    elif total >= 70: level = "Stable Foundation"
+    elif total >= 50: level = "Building Blocks"
+    elif total >= 30: level = "Survival Mode"
+    else:             level = "Red Alert"
 
     critical_flags = []
     if data.cashFlow in ["Burning cash consistently", "Don't know"]: critical_flags.append("CASH_CRISIS")
@@ -274,37 +274,42 @@ def calculate_score(data: BeaconProInput) -> BeaconProScore:
     )
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 # LLM PROMPTS
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 
 def _build_pro_system_prompt() -> str:
-    return """You are a senior business advisor at BeamX Solutions — sharp, direct, and deeply experienced with SMEs in emerging markets, particularly Nigeria and West Africa.
+    return """You are a senior business advisor at BeamX Solutions, sharp, direct, and deeply experienced with SMEs in emerging markets, particularly Nigeria and West Africa.
 
-You are writing a premium, personalised advisory report for a business owner who just completed a diagnostic assessment. This is NOT a template fill-in — you are writing from scratch, as a real advisor would after reviewing their data.
+You are writing a premium, personalised advisory report for a business owner who just completed a diagnostic assessment. This is NOT a template fill-in. You are writing from scratch, as a real advisor would after reviewing their data.
+
+CRITICAL WRITING RULES (non-negotiable):
+- NEVER use em dashes (the -- or the long dash character). Replace any em dash with a comma, period, colon, or rewrite the sentence entirely. This is a firm requirement.
+- Do not use ellipses (...) for stylistic effect.
+- Write in clear, direct sentences. Avoid unnecessarily complex punctuation.
 
 YOUR VOICE:
 - Talk directly to the owner by first name (use it 2-3 times per section, naturally)
-- Be honest, warm, and specific — no generic advice that could apply to anyone
+- Be honest, warm, and specific. No generic advice that could apply to anyone.
 - Reference their actual answers, scores, and flags throughout
-- Sound like a trusted advisor who has studied their business, not an AI filling in blanks
+- Sound like a trusted advisor who has studied their business, not a template being filled in
 - Use Nigerian business context where relevant (naira, CAC, NEPA/power issues, etc.)
 
 REPORT STRUCTURE (follow exactly, use these markdown headers):
 ## Executive Summary
-## 🚨 Critical Priorities (Next 30 Days)   ← only if critical_flags exist
+## Critical Priorities (Next 30 Days)   <- only if critical_flags exist
 ## Strategic Recommendations
-## Growth Opportunities   ← only if opportunity_flags exist
+## Growth Opportunities   <- only if opportunity_flags exist
 ## Your Next Steps
 
 SCORING RULES (never change these):
-- Total score: as provided — never modify
-- Category scores and grades: as provided — never modify
-- Critical flags: as provided — address each one specifically
-- Opportunity flags: as provided — leverage each one specifically
+- Total score: as provided, never modify
+- Category scores and grades: as provided, never modify
+- Critical flags: as provided, address each one specifically
+- Opportunity flags: as provided, leverage each one specifically
 
 ADVISORY QUALITY STANDARDS:
-- Every recommendation must be specific and actionable (not "improve your finances" but "call every customer with invoices >15 days outstanding this week")
+- Every recommendation must be specific and actionable (not "improve your finances" but "call every customer with invoices over 15 days outstanding this week")
 - For each critical flag, give a 30-day plan with Week 1 / Week 2-3 / Month 1 milestones
 - For the weakest 1-2 categories, give a concrete 90-day improvement plan
 - For the primary pain point, give a sequenced, prioritized tactical plan
@@ -331,30 +336,32 @@ OVERALL SCORE: {score.total_score}/100
 READINESS LEVEL: {score.readiness_level}
 
 CATEGORY SCORES:
-- Financial Health: {score.financial_health.score}/20 ({score.financial_health.percentage}%) — Grade: {score.financial_health.grade}
+- Financial Health: {score.financial_health.score}/20 ({score.financial_health.percentage}%) -- Grade: {score.financial_health.grade}
   Answers: Cash Flow={data.cashFlow} | Profit Margin={data.profitMargin} | Cash Runway={data.cashRunway} | Payment Speed={data.paymentSpeed}
 
-- Customer Strength: {score.customer_strength.score}/20 ({score.customer_strength.percentage}%) — Grade: {score.customer_strength.grade}
+- Customer Strength: {score.customer_strength.score}/20 ({score.customer_strength.percentage}%) -- Grade: {score.customer_strength.grade}
   Answers: Repeat Rate={data.repeatCustomerRate} | Acquisition={data.acquisitionChannel} | Pricing Power={data.pricingPower}
 
-- Operational Maturity: {score.operational_maturity.score}/20 ({score.operational_maturity.percentage}%) — Grade: {score.operational_maturity.grade}
+- Operational Maturity: {score.operational_maturity.score}/20 ({score.operational_maturity.percentage}%) -- Grade: {score.operational_maturity.grade}
   Answers: Founder Dependency={data.founderDependency} | Process Docs={data.processDocumentation} | Inventory={data.inventoryTracking}
 
-- Financial Intelligence: {score.financial_intelligence.score}/20 ({score.financial_intelligence.percentage}%) — Grade: {score.financial_intelligence.grade}
+- Financial Intelligence: {score.financial_intelligence.score}/20 ({score.financial_intelligence.percentage}%) -- Grade: {score.financial_intelligence.grade}
   Answers: Expense Awareness={data.expenseAwareness} | Profit Per Product={data.profitPerProduct} | Pricing Strategy={data.pricingStrategy}
 
-- Growth & Resilience: {score.growth_resilience.score}/20 ({score.growth_resilience.percentage}%) — Grade: {score.growth_resilience.grade}
+- Growth & Resilience: {score.growth_resilience.score}/20 ({score.growth_resilience.percentage}%) -- Grade: {score.growth_resilience.grade}
   Answers: Trajectory={data.businessTrajectory} | Diversification={data.revenueDiversification} | Digital Payments={data.digitalPayments} | Registration={data.formalRegistration} | Infrastructure={data.infrastructure} | Banking={data.bankingRelationship}
 
 CRITICAL FLAGS: {critical}
 OPPORTUNITY FLAGS: {opportunities}
 
-Write the full advisory now. Address {first_name} directly. Quote their actual answers back to them. Make every recommendation concrete and actionable. Include {data.industry} industry context relevant to Nigeria/West Africa."""
+Write the full advisory now. Address {first_name} directly. Quote their actual answers back to them. Make every recommendation concrete and actionable. Include {data.industry} industry context relevant to Nigeria/West Africa.
+
+REMINDER: Do not use em dashes anywhere in the report. Use commas, colons, or rewrite sentences instead."""
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 # STREAMING ENDPOINT
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 
 @app.post("/generate-report-stream")
 async def generate_report_stream(input_data: BeaconProInput):
@@ -428,7 +435,7 @@ async def generate_report_stream(input_data: BeaconProInput):
         except Exception as db_err:
             logger.warning(f"DB insert failed (non-fatal): {db_err}")
 
-        # Phase 3: done — send full advisory for PDF/email
+        # Phase 3: done
         yield f"data: {json.dumps({'type': 'done', 'data': full_advisory})}\n\n"
 
     return StreamingResponse(
@@ -436,14 +443,14 @@ async def generate_report_stream(input_data: BeaconProInput):
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "X-Accel-Buffering": "no",
         }
     )
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 # PDF GENERATION
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 
 def generate_pro_pdf(score: BeaconProScore, data: BeaconProInput, advisory: str) -> io.BytesIO:
     logo_url = 'https://beamxsolutions.com/Beamx-Logo-Colour.png'
@@ -460,13 +467,13 @@ def generate_pro_pdf(score: BeaconProScore, data: BeaconProInput, advisory: str)
             if not line:
                 continue
             if line.startswith('## '):
-                html_lines.append(f'<h2 style="color:#B8860B;font-size:17px;margin:16px 0 8px;border-bottom:2px solid #B8860B;padding-bottom:4px;">{line[3:]}</h2>')
+                html_lines.append(f'<h2 style="color:#0f0f0f;font-size:17px;margin:16px 0 8px;border-bottom:2px solid #0f0f0f;padding-bottom:4px;">{line[3:]}</h2>')
             elif line.startswith('### '):
-                html_lines.append(f'<h3 style="color:#8B6914;font-size:14px;margin:12px 0 6px;">{line[4:]}</h3>')
-            elif line.startswith('- ') or line.startswith('• '):
+                html_lines.append(f'<h3 style="color:#374151;font-size:14px;margin:12px 0 6px;">{line[4:]}</h3>')
+            elif line.startswith('- ') or line.startswith('* '):
                 html_lines.append(f'<li style="margin:5px 0;line-height:1.5;font-size:12px;">{line[2:]}</li>')
             elif line == '---':
-                html_lines.append('<hr style="border:1px solid #d4af37;margin:16px 0;">')
+                html_lines.append('<hr style="border:1px solid #e5e7eb;margin:16px 0;">')
             else:
                 html_lines.append(f'<p style="margin:5px 0;line-height:1.5;font-size:12px;">{line}</p>')
         return '\n'.join(html_lines)
@@ -474,7 +481,7 @@ def generate_pro_pdf(score: BeaconProScore, data: BeaconProInput, advisory: str)
     advisory_html = md_to_html(advisory)
 
     def score_bar(pct):
-        color = "#B8860B" if pct >= 70 else "#CC8800" if pct >= 50 else "#cc3300"
+        color = "#0f0f0f" if pct >= 70 else "#6b7280" if pct >= 50 else "#cc3300"
         return f'<div style="background:#eee;border-radius:4px;height:10px;width:100%;"><div style="background:{color};width:{pct}%;height:10px;border-radius:4px;"></div></div>'
 
     categories = [score.financial_health, score.customer_strength, score.operational_maturity, score.financial_intelligence, score.growth_resilience]
@@ -499,10 +506,10 @@ def generate_pro_pdf(score: BeaconProScore, data: BeaconProInput, advisory: str)
   .page {{ width:8.5in; min-height:11in; background:white; position:relative; page-break-after:always; }}
   .page-cover {{ background-image:url('{cover_bg_url}'); background-size:cover; background-position:center; display:flex; flex-direction:column; justify-content:space-between; height:11in; }}
   .page-content {{ padding:40px 50px 80px; background:#f5f5f5; }}
-  .footer {{ background:#1a1a2e; color:#d4af37; padding:12px 50px; display:flex; justify-content:space-between; font-size:11px; position:absolute; bottom:0; left:0; right:0; }}
+  .footer {{ background:#0f0f0f; color:#d4af37; padding:12px 50px; display:flex; justify-content:space-between; font-size:11px; position:absolute; bottom:0; left:0; right:0; }}
   table {{ width:100%; border-collapse:collapse; background:white; }}
-  th {{ background:#B8860B; color:white; padding:10px; text-align:center; font-size:12px; }}
-  .pro-badge {{ background:#B8860B; color:white; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:bold; display:inline-block; margin-left:8px; letter-spacing:1px; }}
+  th {{ background:#0f0f0f; color:white; padding:10px; text-align:center; font-size:12px; }}
+  .pro-badge {{ background:#0f0f0f; color:white; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:bold; display:inline-block; margin-left:8px; letter-spacing:1px; }}
 </style>
 </head><body>
 
@@ -512,9 +519,9 @@ def generate_pro_pdf(score: BeaconProScore, data: BeaconProInput, advisory: str)
     <img src="{logo_url}" style="width:160px;" />
     <span class="pro-badge">PRO</span>
   </div>
-  <div style="background:rgba(26,26,46,0.95);padding:80px 60px;">
+  <div style="background:rgba(15,15,15,0.95);padding:80px 60px;">
     <h1 style="font-size:54px;font-weight:bold;color:white;line-height:1.1;">Beacon Pro<br>Business<br>Assessment</h1>
-    <p style="color:#d4af37;font-size:16px;margin-top:14px;">AI-Powered Deep Diagnostic</p>
+    <p style="color:#d4af37;font-size:16px;margin-top:14px;">Deep Business Diagnostic</p>
   </div>
   <div style="padding:40px 60px;color:white;">
     <p style="font-weight:600;margin-bottom:4px;color:#d4af37;">Prepared For</p>
@@ -530,62 +537,62 @@ def generate_pro_pdf(score: BeaconProScore, data: BeaconProInput, advisory: str)
 <!-- SCORECARD PAGE -->
 <div class="page page-content">
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
-    <h2 style="color:#B8860B;font-size:20px;font-weight:bold;border-bottom:3px solid #B8860B;display:inline-block;padding-bottom:4px;">Overall Assessment</h2>
+    <h2 style="color:#0f0f0f;font-size:20px;font-weight:bold;border-bottom:3px solid #0f0f0f;display:inline-block;padding-bottom:4px;">Overall Assessment</h2>
     <span class="pro-badge">PRO</span>
   </div>
-  <div style="display:flex;gap:24px;align-items:center;background:white;padding:20px;margin-bottom:20px;border-left:4px solid #B8860B;">
+  <div style="display:flex;gap:24px;align-items:center;background:white;padding:20px;margin-bottom:20px;border-left:4px solid #0f0f0f;">
     <svg width="160" height="160" viewBox="0 0 200 200">
-      <circle cx="100" cy="100" r="70" fill="none" stroke="#f0e0a0" stroke-width="28"/>
-      <circle cx="100" cy="100" r="70" fill="none" stroke="#B8860B" stroke-width="28"
+      <circle cx="100" cy="100" r="70" fill="none" stroke="#e5e7eb" stroke-width="28"/>
+      <circle cx="100" cy="100" r="70" fill="none" stroke="#0f0f0f" stroke-width="28"
         stroke-dasharray="{progress:.1f} {circumference:.1f}" transform="rotate(-90 100 100)"/>
       <text x="100" y="94" text-anchor="middle" font-size="20" font-weight="bold" fill="#000">{score.total_score}/100</text>
       <text x="100" y="114" text-anchor="middle" font-size="10" fill="#666">Overall Score</text>
     </svg>
     <div>
       <p style="font-size:18px;font-weight:bold;margin-bottom:6px;">Readiness Level</p>
-      <p style="font-size:15px;color:#B8860B;margin-bottom:12px;">{score.readiness_level}</p>
+      <p style="font-size:15px;color:#0f0f0f;margin-bottom:12px;">{score.readiness_level}</p>
       <p style="font-size:12px;margin-bottom:3px;"><strong>Business:</strong> {data.businessName}</p>
       <p style="font-size:12px;margin-bottom:3px;"><strong>Industry:</strong> {data.industry}</p>
       <p style="font-size:12px;margin-bottom:3px;"><strong>Years in Business:</strong> {data.yearsInBusiness}</p>
       <p style="font-size:12px;"><strong>Primary Challenge:</strong> {data.primaryPainPoint}</p>
     </div>
   </div>
-  <h2 style="color:#B8860B;font-size:16px;font-weight:bold;border-bottom:2px solid #B8860B;display:inline-block;padding-bottom:3px;margin-bottom:12px;">Score Breakdown</h2>
+  <h2 style="color:#0f0f0f;font-size:16px;font-weight:bold;border-bottom:2px solid #0f0f0f;display:inline-block;padding-bottom:3px;margin-bottom:12px;">Score Breakdown</h2>
   <table style="margin-bottom:20px;"><thead><tr><th>Category</th><th>Score</th><th>Max</th><th>Grade</th><th>Performance</th></tr></thead><tbody>{table_rows}</tbody></table>
   <div style="display:flex;gap:14px;">
     <div style="flex:1;background:#fee;border-left:4px solid #cc3300;padding:14px;border-radius:4px;">
       <p style="font-weight:bold;color:#cc3300;margin-bottom:8px;font-size:12px;">Critical Flags</p>
-      {''.join([f'<p style="font-size:11px;margin:3px 0;">⚠ {f.replace("_"," ")}</p>' for f in score.critical_flags]) if score.critical_flags else '<p style="font-size:11px;">None detected</p>'}
+      {''.join([f'<p style="font-size:11px;margin:3px 0;">! {f.replace("_"," ")}</p>' for f in score.critical_flags]) if score.critical_flags else '<p style="font-size:11px;">None detected</p>'}
     </div>
-    <div style="flex:1;background:#fffbee;border-left:4px solid #B8860B;padding:14px;border-radius:4px;">
-      <p style="font-weight:bold;color:#B8860B;margin-bottom:8px;font-size:12px;">Opportunity Flags</p>
-      {''.join([f'<p style="font-size:11px;margin:3px 0;">✓ {f.replace("_"," ")}</p>' for f in score.opportunity_flags]) if score.opportunity_flags else '<p style="font-size:11px;">None detected</p>'}
+    <div style="flex:1;background:#f9fafb;border-left:4px solid #0f0f0f;padding:14px;border-radius:4px;">
+      <p style="font-weight:bold;color:#0f0f0f;margin-bottom:8px;font-size:12px;">Opportunity Flags</p>
+      {''.join([f'<p style="font-size:11px;margin:3px 0;">+ {f.replace("_"," ")}</p>' for f in score.opportunity_flags]) if score.opportunity_flags else '<p style="font-size:11px;">None detected</p>'}
     </div>
   </div>
-  <div class="footer"><span>Beacon Pro — {data.businessName}</span><span>Copyright © 2025 BeamX Solutions</span></div>
+  <div class="footer"><span>Beacon Pro -- {data.businessName}</span><span>Copyright 2025 BeamX Solutions</span></div>
 </div>
 
 <!-- ADVISORY PAGE -->
 <div class="page page-content">
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
-    <h2 style="color:#B8860B;font-size:20px;font-weight:bold;border-bottom:3px solid #B8860B;display:inline-block;padding-bottom:4px;">AI-Powered Strategic Advisory</h2>
+    <h2 style="color:#0f0f0f;font-size:20px;font-weight:bold;border-bottom:3px solid #0f0f0f;display:inline-block;padding-bottom:4px;">Strategic Advisory</h2>
     <span class="pro-badge">PRO</span>
   </div>
-  <div style="background:white;padding:20px;border-left:4px solid #B8860B;">{advisory_html}</div>
-  <div class="footer"><span>Beacon Pro — {data.businessName}</span><span>Copyright © 2025 BeamX Solutions</span></div>
+  <div style="background:white;padding:20px;border-left:4px solid #0f0f0f;">{advisory_html}</div>
+  <div class="footer"><span>Beacon Pro -- {data.businessName}</span><span>Copyright 2025 BeamX Solutions</span></div>
 </div>
 
 <!-- CTA PAGE -->
-<div class="page" style="background:#1a1a2e;padding:60px;color:white;height:11in;">
+<div class="page" style="background:#0f0f0f;padding:60px;color:white;height:11in;">
   <h2 style="font-size:34px;font-weight:bold;border-bottom:4px solid #d4af37;display:inline-block;padding-bottom:8px;margin-bottom:28px;">Ready to Take Action?</h2>
   <div style="background:rgba(212,175,55,0.1);border:1px solid #d4af37;padding:20px;border-radius:8px;margin-bottom:28px;font-size:14px;line-height:1.6;color:white;">
-    You've completed the most comprehensive AI-powered business diagnostic available for SMEs. The analysis above was written specifically for {data.businessName}. Now it's time to act.
+    You have completed a comprehensive business diagnostic. The analysis above was written specifically for {data.businessName}. Now it is time to act.
   </div>
   <img src="{cta_img_url}" style="width:100%;height:320px;object-fit:cover;border-radius:8px;margin-bottom:28px;" />
   <div style="font-size:15px;line-height:2.4;color:#d4af37;">
-    <p>🌐 www.beamxsolutions.com</p>
-    <p>✉️ info@beamxsolutions.com</p>
-    <p>📅 https://calendly.com/beamxsolutions</p>
+    <p>www.beamxsolutions.com</p>
+    <p>info@beamxsolutions.com</p>
+    <p>https://calendly.com/beamxsolutions</p>
   </div>
 </div>
 
@@ -597,28 +604,28 @@ def generate_pro_pdf(score: BeaconProScore, data: BeaconProInput, advisory: str)
     return buffer
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 # EMAIL
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 
 def _build_pro_email_html(data: BeaconProInput, score: BeaconProScore) -> str:
     return f"""<body style="font-family:Arial,sans-serif;background:#f5f5f5;margin:0;padding:0;">
 <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:20px 0;">
 <table width="600" cellpadding="0" cellspacing="0">
-  <tr><td style="background:#1a1a2e;padding:40px 20px;text-align:center;">
+  <tr><td style="background:#0f0f0f;padding:40px 20px;text-align:center;">
     <img src="https://beamxsolutions.com/asset-1-2.png" width="112" height="50" style="display:block;margin:0 auto 12px;" />
-    <span style="background:#B8860B;color:white;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:bold;letter-spacing:1px;">PRO</span>
-    <h1 style="color:#d4af37;font-size:24px;margin:12px 0 0;">Your Beacon Pro Report</h1>
-    <p style="color:#aaa;font-size:13px;margin:6px 0 0;">AI-Powered Deep Diagnostic</p>
+    <span style="background:#d4af37;color:#0f0f0f;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:bold;letter-spacing:1px;">PRO</span>
+    <h1 style="color:#ffffff;font-size:24px;margin:12px 0 0;">Your Beacon Pro Report</h1>
+    <p style="color:#aaa;font-size:13px;margin:6px 0 0;">Deep Business Diagnostic</p>
   </td></tr>
   <tr><td style="height:20px;background:#f5f5f5;"></td></tr>
   <tr><td style="padding:0 30px;background:#f5f5f5;">
     <p style="font-size:14px;line-height:1.6;">Hello {data.fullName},<br><br>
-    Your AI-powered Beacon Pro assessment for <strong>{data.businessName}</strong> is attached. This report was generated specifically for your business — every recommendation and insight is based on your exact answers.</p>
+    Your Beacon Pro assessment for <strong>{data.businessName}</strong> is attached. This report was generated specifically for your business. Every recommendation and insight is based on your exact answers.</p>
   </td></tr>
   <tr><td style="height:16px;background:#f5f5f5;"></td></tr>
   <tr><td align="center" style="background:#f5f5f5;">
-    <table width="380" cellpadding="22" cellspacing="0" style="background:#1a1a2e;border:2px solid #d4af37;border-radius:8px;">
+    <table width="380" cellpadding="22" cellspacing="0" style="background:#0f0f0f;border:2px solid #d4af37;border-radius:8px;">
       <tr><td>
         <p style="color:#d4af37;font-size:20px;font-weight:700;margin:0;">Score: {score.total_score}/100</p>
         <p style="color:#fff;font-size:13px;margin:6px 0 0;">{score.readiness_level}</p>
@@ -627,37 +634,37 @@ def _build_pro_email_html(data: BeaconProInput, score: BeaconProScore) -> str:
   </td></tr>
   <tr><td style="height:16px;background:#f5f5f5;"></td></tr>
   <tr><td style="padding:0 30px;background:#f5f5f5;">
-    <table width="100%" cellpadding="16" cellspacing="0" style="background:white;border-radius:8px;border-top:3px solid #B8860B;">
+    <table width="100%" cellpadding="16" cellspacing="0" style="background:white;border-radius:8px;border-top:3px solid #0f0f0f;">
       <tr><td>
-        <h2 style="color:#B8860B;font-size:15px;margin:0 0 14px;">Score Breakdown</h2>
-        <p style="font-size:13px;margin:0 0 8px;">💰 Financial Health: <strong>{score.financial_health.score}/20</strong> — {score.financial_health.grade}</p>
-        <p style="font-size:13px;margin:0 0 8px;">🤝 Customer Strength: <strong>{score.customer_strength.score}/20</strong> — {score.customer_strength.grade}</p>
-        <p style="font-size:13px;margin:0 0 8px;">⚙️ Operational Maturity: <strong>{score.operational_maturity.score}/20</strong> — {score.operational_maturity.grade}</p>
-        <p style="font-size:13px;margin:0 0 8px;">📊 Financial Intelligence: <strong>{score.financial_intelligence.score}/20</strong> — {score.financial_intelligence.grade}</p>
-        <p style="font-size:13px;margin:0;">📈 Growth & Resilience: <strong>{score.growth_resilience.score}/20</strong> — {score.growth_resilience.grade}</p>
+        <h2 style="color:#0f0f0f;font-size:15px;margin:0 0 14px;">Score Breakdown</h2>
+        <p style="font-size:13px;margin:0 0 8px;">Financial Health: <strong>{score.financial_health.score}/20</strong> ({score.financial_health.grade})</p>
+        <p style="font-size:13px;margin:0 0 8px;">Customer Strength: <strong>{score.customer_strength.score}/20</strong> ({score.customer_strength.grade})</p>
+        <p style="font-size:13px;margin:0 0 8px;">Operational Maturity: <strong>{score.operational_maturity.score}/20</strong> ({score.operational_maturity.grade})</p>
+        <p style="font-size:13px;margin:0 0 8px;">Financial Intelligence: <strong>{score.financial_intelligence.score}/20</strong> ({score.financial_intelligence.grade})</p>
+        <p style="font-size:13px;margin:0;">Growth &amp; Resilience: <strong>{score.growth_resilience.score}/20</strong> ({score.growth_resilience.grade})</p>
       </td></tr>
     </table>
   </td></tr>
   <tr><td style="height:16px;background:#f5f5f5;"></td></tr>
   <tr><td align="center" style="background:#f5f5f5;">
     <table cellpadding="0" cellspacing="0"><tr>
-      <td style="background:#B8860B;border-radius:8px;">
+      <td style="background:#0f0f0f;border-radius:8px;">
         <a href="https://calendly.com/beamxsolutions" style="display:inline-block;padding:13px 26px;color:white;text-decoration:none;font-size:14px;font-weight:700;">Book Your Free Strategy Call</a>
       </td>
     </tr></table>
   </td></tr>
   <tr><td style="height:16px;background:#f5f5f5;"></td></tr>
-  <tr><td style="background:#1a1a2e;padding:20px;text-align:center;">
+  <tr><td style="background:#0f0f0f;padding:20px;text-align:center;">
     <p style="color:#d4af37;font-size:12px;margin:0 0 6px;">www.beamxsolutions.com | info@beamxsolutions.com</p>
-    <p style="color:#888;font-size:11px;margin:0;">Copyright © 2025 BeamX Solutions</p>
+    <p style="color:#888;font-size:11px;margin:0;">Copyright 2025 BeamX Solutions</p>
   </td></tr>
 </table></td></tr></table>
 </body>"""
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 # REST ENDPOINTS
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------
 
 @app.post("/download-pdf")
 async def download_pdf(payload: dict):
@@ -695,7 +702,7 @@ async def email_results(payload: dict):
         resend.Emails.send({
             "from": f"BeamX Solutions <{from_email}>",
             "to": [recipient_email],
-            "subject": f"Your Beacon Pro Report: {score.total_score}/100 — {score.readiness_level} | {form_data.businessName}",
+            "subject": f"Your Beacon Pro Report: {score.total_score}/100 | {form_data.businessName}",
             "html": _build_pro_email_html(form_data_for_email, score),
             "attachments": [{"filename": "Beacon_Pro_Assessment_Report.pdf", "content": pdf_b64}]
         })
